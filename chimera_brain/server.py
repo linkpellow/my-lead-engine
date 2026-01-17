@@ -15,6 +15,8 @@ import asyncio
 from concurrent import futures
 import grpc
 from typing import Optional
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from threading import Thread
 
 # Import generated proto classes (will be created by generate_proto.sh)
 try:
@@ -220,12 +222,43 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
             )
 
 
-def serve(port: int = 50051, use_simple_vision: bool = False, redis_url: Optional[str] = None):
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple HTTP handler for Railway healthchecks"""
+    
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"status":"healthy","service":"chimera-brain"}')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        # Suppress HTTP server logs
+        pass
+
+
+def start_health_server(port: int = 8080):
+    """Start HTTP healthcheck server in a separate thread"""
+    def run_server():
+        server = HTTPServer(('::', port), HealthCheckHandler)
+        logger.info(f"🏥 Health check server started on [::]:{port}")
+        server.serve_forever()
+    
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    return thread
+
+
+def serve(grpc_port: int = 50051, health_port: int = 8080, use_simple_vision: bool = False, redis_url: Optional[str] = None):
     """
     Start the gRPC server for The Brain.
     
     Args:
-        port: Port to listen on (default: 50051 for Railway)
+        grpc_port: Port for gRPC server (default: 50051)
+        health_port: Port for HTTP healthcheck (default: 8080, Railway uses PORT env var)
         use_simple_vision: Use simple detector instead of full VLM
         redis_url: Redis URL for Hive Mind
     """
@@ -233,13 +266,17 @@ def serve(port: int = 50051, use_simple_vision: bool = False, redis_url: Optiona
         logger.error("Proto files not generated! Run ./generate_proto.sh first.")
         return
     
+    # Start HTTP healthcheck server (Railway requirement)
+    # Railway uses PORT env var for healthchecks, but we need gRPC on 50051
+    start_health_server(health_port)
+    
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     chimera_pb2_grpc.add_BrainServicer_to_server(
         BrainService(use_simple_vision=use_simple_vision, redis_url=redis_url),
         server
     )
     
-    listen_addr = f"[::]:{port}"
+    listen_addr = f"[::]:{grpc_port}"
     server.add_insecure_port(listen_addr)
     
     logger.info(f"🧠 Starting The Brain gRPC server on {listen_addr}")
@@ -260,10 +297,12 @@ if __name__ == "__main__":
     # Parse command line arguments
     use_simple = "--simple" in sys.argv or os.getenv("CHIMERA_USE_SIMPLE", "false").lower() == "true"
     
-    # Railway uses PORT environment variable, but we default to 50051 for The Brain
-    port = int(os.getenv("PORT", os.getenv("CHIMERA_BRAIN_PORT", "50051")))
+    # Railway uses PORT for healthchecks, but gRPC needs to be on 50051
+    # Use PORT for HTTP health, CHIMERA_BRAIN_PORT for gRPC
+    health_port = int(os.getenv("PORT", "8080"))  # Railway healthcheck port
+    grpc_port = int(os.getenv("CHIMERA_BRAIN_PORT", "50051"))  # gRPC server port
     
     # Redis URL for Hive Mind
     redis_url = os.getenv("REDIS_URL", None)
     
-    serve(port=port, use_simple_vision=use_simple, redis_url=redis_url)
+    serve(grpc_port=grpc_port, health_port=health_port, use_simple_vision=use_simple, redis_url=redis_url)

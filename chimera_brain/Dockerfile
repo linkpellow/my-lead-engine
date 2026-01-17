@@ -15,21 +15,24 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source code
 COPY . .
 
-# Generate proto files (if not already generated)
+# Proto files should already be generated and committed in proto/ directory
+# If they don't exist, the server will fail to start (which is expected)
+# Proto files are generated locally via generate_proto.sh and committed to git
 RUN if [ ! -f proto/chimera_pb2.py ]; then \
-    python -m grpc_tools.protoc \
-        --proto_path=../@proto \
-        --python_out=./proto \
-        --grpc_python_out=./proto \
-        ../@proto/chimera.proto || true; \
+        echo "ERROR: Proto files not found! Run ./generate_proto.sh locally and commit proto/ directory."; \
+        exit 1; \
+    else \
+        echo "✅ Proto files found: $(ls proto/*.py)"; \
     fi
 
-# Expose gRPC port
+# Expose both ports
+EXPOSE 8080
 EXPOSE 50051
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV PORT=50051
+ENV PORT=8080
+ENV CHIMERA_BRAIN_PORT=50051
 
 # Start the Brain server
 CMD ["python", "server.py"]

@@ -9,5 +9,6 @@ restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
 [env]
-PORT = "50051"
+PORT = "8080"
+CHIMERA_BRAIN_PORT = "50051"
 PYTHONUNBUFFERED = "1"
