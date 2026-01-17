@@ -243,8 +243,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 def start_health_server(port: int = 8080):
     """Start HTTP healthcheck server in a separate thread"""
     def run_server():
-        server = HTTPServer(('::', port), HealthCheckHandler)
-        logger.info(f"🏥 Health check server started on [::]:{port}")
+        # Use 0.0.0.0 for dual-stack binding (works with both IPv4 and IPv6)
+        # Python's HTTPServer doesn't support '::' directly
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        logger.info(f"🏥 Health check server started on 0.0.0.0:{port}")
         server.serve_forever()
     
     thread = Thread(target=run_server, daemon=True)
