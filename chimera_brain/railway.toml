@@ -1,6 +1,7 @@
 [build]
 builder = "NIXPACKS"
 # Using Nixpacks - Dockerfile removed from git
+# Nixpacks auto-detects Python and installs from requirements.txt
 
 [deploy]
 startCommand = "python server.py"
@@ -13,3 +14,7 @@ restartPolicyMaxRetries = 10
 PORT = "8080"
 CHIMERA_BRAIN_PORT = "50051"
 PYTHONUNBUFFERED = "1"
+
+[environments]
+[environments.production]
+ENVIRONMENT = "production"
