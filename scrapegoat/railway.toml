@@ -1,9 +1,10 @@
 [build]
 builder = "NIXPACKS"
 buildCommand = "pip install -r requirements.txt && playwright install chromium"
-# Watch all files to prevent skipping (temporary - can be narrowed later)
+# Watch paths are evaluated from repository root, not root directory
+# Use explicit path to ensure changes are detected
 watchPatterns = [
-  "**"
+  "scrapegoat/**"
 ]
 
 [deploy]
