@@ -1,0 +1,301 @@
+---
+description: "Railway Deployment Configuration - Monorepo Service Setup"
+alwaysApply: false
+globs:
+  - "railway.toml"
+  - "brainscraper/railway.toml"
+  - "scrapegoat/railway.toml"
+  - "docker-compose.yml"
+---
+
+# Railway Deployment Configuration
+
+## 🎯 CRITICAL: Unorthodox Monorepo Architecture
+
+**This is NOT a traditional monorepo.** Two separate codebases (`/brainscraper` and `/scrapegoat`) are deployed as independent Railway services, unified via shared infrastructure (Redis + PostgreSQL).
+
+---
+
+## 📁 PROJECT STRUCTURE
+
+```
+my-lead-engine/
+├── brainscraper/          # Next.js service (Port 3000)
+│   ├── package.json
+│   ├── railway.toml
+│   ├── next.config.js
+│   └── ...
+├── scrapegoat/            # FastAPI service (Port 8000)
+│   ├── requirements.txt
+│   ├── railway.toml
+│   ├── main.py
+│   └── ...
+└── docker-compose.yml     # Local development only
+```
+
+---
+
+## 🔧 SERVICE 1: BrainScraper (Next.js)
+
+### Railway Dashboard Settings
+
+**General:**
+- **Root Directory:** `brainscraper` ⚠️ (NOT root!)
+- **Watch Paths:** `brainscraper/**`
+- **Port:** `3000` (from env var `PORT`)
+
+**Build:**
+- **Build Command:** `npm run build` (must use `--webpack` flag)
+- **Start Command:** `npm start`
+- **Build Timeout:** 600 seconds (Next.js builds can be slow)
+
+**Deploy:**
+- **Healthcheck Path:** `/` or `/api/health`
+- **Healthcheck Timeout:** 180 seconds
+- **Restart Policy:** `ON_FAILURE`
+- **Max Retries:** 5
+
+### railway.toml Configuration
+```toml
+[build]
+builder = "DOCKERFILE"  # Or "NIXPACKS" if using Nixpacks
+
+[deploy]
+healthcheckPath = "/"
+healthcheckTimeout = 180
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+[environments]
+[environments.production]
+NODE_ENV = "production"
+NEXT_TELEMETRY_DISABLED = "1"
+```
+
+### Environment Variables
+```bash
+# Infrastructure (Railway Shared Variables)
+REDIS_URL=${{redis-bridge.REDIS_URL}}
+DATABASE_URL=${{PostgreSQL.DATABASE_URL}}
+
+# Application
+NODE_ENV=production
+PORT=3000
+NEXT_PUBLIC_BASE_URL=https://brainscraper.io
+DATA_DIR=/data
+
+# API Keys
+RAPIDAPI_KEY=your-rapidapi-key
+USHA_JWT_TOKEN=your-usha-token
+CENSUS_API_KEY=your-census-key
+
+# Optional
+NODE_VERSION=20
+CRON_SECRET=your-secret
+```
+
+### Build Requirements
+- **Must use webpack:** `next build --webpack` (Turbopack incompatible with custom config)
+- **Standalone output:** Configured in `next.config.js`
+- **Node version:** 20 (specified in `.nvmrc` or `NODE_VERSION` env var)
+
+---
+
+## 🐍 SERVICE 2: Scrapegoat (FastAPI)
+
+### Railway Dashboard Settings
+
+**General:**
+- **Root Directory:** `scrapegoat` ⚠️ (NOT root!)
+- **Watch Paths:** `scrapegoat/**`
+- **Port:** `8000` (auto-assigned by Railway)
+
+**Build:**
+- **Build Command:** `pip install -r requirements.txt && playwright install chromium`
+- **Start Command:** `python main.py`
+- **Build Timeout:** 600 seconds
+
+**Deploy:**
+- **Healthcheck Path:** `/health`
+- **Healthcheck Timeout:** 300 seconds (Playwright install can be slow)
+- **Restart Policy:** `ON_FAILURE`
+- **Max Retries:** 10
+
+### railway.toml Configuration
+```toml
+[build]
+builder = "NIXPACKS"
+buildCommand = "pip install -r requirements.txt && playwright install chromium"
+
+[deploy]
+startCommand = "python main.py"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[environments]
+[environments.production]
+ENVIRONMENT = "production"
+```
+
+### Environment Variables
+```bash
+# Infrastructure (Railway Shared Variables)
+DATABASE_URL=${{PostgreSQL.DATABASE_URL}}
+APP_DATABASE_URL=${{PostgreSQL.DATABASE_URL}}
+REDIS_URL=${{redis-bridge.REDIS_URL}}
+APP_REDIS_URL=${{redis-bridge.REDIS_URL}}
+APP_CELERY_BROKER_URL=${{redis-bridge.REDIS_URL}}/1
+APP_CELERY_RESULT_BACKEND=${{redis-bridge.REDIS_URL}}/2
+
+# Application
+PYTHONUNBUFFERED=1
+ENVIRONMENT=production
+
+# API Keys
+OPENAI_API_KEY=sk-proj-...  # For Vision LLM self-healing
+CENSUS_API_KEY=b4f15ee777...  # For demographic enrichment
+RAPIDAPI_KEY=your-key  # For skip-tracing APIs
+
+# Optional ScraperAPI Keys
+SCRAPERAPI_KEY=your-key
+SCRAPINGBEE_API_KEY=your-key
+```
+
+### Build Requirements
+- **Playwright:** Must install Chromium (`playwright install chromium`)
+- **Python:** 3.12 (from `requirements.txt` dependencies)
+- **Dependencies:** FastAPI, Redis, Playwright, Pydantic
+
+---
+
+## 👷 SERVICE 3: Scrapegoat Worker (5+ Replicas)
+
+### Railway Dashboard Settings
+
+**General:**
+- **Root Directory:** `scrapegoat` (same as main service)
+- **Watch Paths:** `scrapegoat/**`
+- **Port:** Not needed (worker doesn't expose HTTP)
+
+**Build:**
+- **Build Command:** Same as Scrapegoat service
+- **Start Command:** `python start_redis_worker.py` ⚠️ (Different!)
+
+**Deploy:**
+- **Scaling:** 5 replicas (or more for higher throughput)
+- **Healthcheck:** Optional (worker doesn't expose HTTP)
+
+### Environment Variables
+- **Same as Scrapegoat service** (all variables above)
+
+### Worker Startup Script
+```python
+# start_redis_worker.py
+import os
+from app.workers.redis_queue_worker import worker_loop
+
+if __name__ == "__main__":
+    print("Starting Scrapegoat Worker...")
+    worker_loop()
+```
+
+---
+
+## 🔗 SHARED INFRASTRUCTURE
+
+### Redis Bridge
+- **Service Name:** `redis-bridge`
+- **Type:** Railway Redis Database
+- **Shared Variable:** `${{redis-bridge.REDIS_URL}}`
+- **Used By:** Both BrainScraper and Scrapegoat
+
+### PostgreSQL Database
+- **Service Name:** `PostgreSQL` (or custom name)
+- **Type:** Railway PostgreSQL Database
+- **Shared Variable:** `${{PostgreSQL.DATABASE_URL}}`
+- **Used By:** Both BrainScraper (read) and Scrapegoat (write)
+
+---
+
+## ⚠️ CRITICAL CONFIGURATION ERRORS TO AVOID
+
+### ❌ Wrong: Root Directory Not Set
+- **Symptom:** "Railpack could not determine" errors
+- **Fix:** Set Root Directory to `brainscraper` or `scrapegoat` in Railway dashboard
+
+### ❌ Wrong: Using Turbopack for BrainScraper
+- **Symptom:** Build fails with custom Next.js config
+- **Fix:** Use `next build --webpack` flag
+
+### ❌ Wrong: Missing Playwright Install
+- **Symptom:** Scrapegoat crashes on startup
+- **Fix:** Add `playwright install chromium` to build command
+
+### ❌ Wrong: Different Redis URLs
+- **Symptom:** Services can't communicate
+- **Fix:** Both services must use `${{redis-bridge.REDIS_URL}}`
+
+### ❌ Wrong: Hardcoded URLs Instead of Shared Variables
+- **Symptom:** Services connect to wrong infrastructure
+- **Fix:** Always use `${{service-name.VARIABLE_NAME}}` syntax
+
+---
+
+## ✅ DEPLOYMENT CHECKLIST
+
+### Before Deploying
+- [ ] Root Directory set correctly for each service
+- [ ] Watch Paths set to `service-name/**`
+- [ ] All environment variables configured
+- [ ] Shared variables use `${{...}}` syntax
+- [ ] Build commands include all required steps
+- [ ] Healthcheck paths are correct
+
+### After Deploying
+- [ ] BrainScraper healthcheck passes (`/` or `/api/health`)
+- [ ] Scrapegoat healthcheck passes (`/health`)
+- [ ] Redis connection works (check queue status)
+- [ ] PostgreSQL connection works (check database)
+- [ ] Worker replicas are running (check Railway dashboard)
+- [ ] Queue processing works (push test lead, verify consumption)
+
+---
+
+## 🔍 TROUBLESHOOTING
+
+### Service Won't Build
+1. Check Root Directory is set correctly
+2. Verify build command includes all dependencies
+3. Check build logs for specific errors
+4. Verify environment variables are set
+
+### Services Can't Connect
+1. Verify both services use same `REDIS_URL` (shared variable)
+2. Verify both services use same `DATABASE_URL` (shared variable)
+3. Check Railway dashboard shows services are running
+4. Test Redis connection: `redis-cli -u $REDIS_URL ping`
+5. Test PostgreSQL connection: `psql $DATABASE_URL`
+
+### Worker Not Processing Queue
+1. Check worker is running (Railway dashboard)
+2. Verify worker start command is `python start_redis_worker.py`
+3. Check Redis connection in worker logs
+4. Verify queue has items: `redis-cli LLEN leads_to_enrich`
+5. Check worker logs for errors
+
+---
+
+## 📚 RELATED DOCUMENTATION
+
+- `MONOREPO_RAILWAY_SETUP.md` - Detailed setup guide
+- `RAILWAY_COMPLETE_SETUP.md` - Complete deployment walkthrough
+- `RAILWAY_ENV_VARIABLES.md` - Environment variable reference
+- `README_REDIS_BRIDGE.md` - Redis bridge architecture
+
+---
+
+## 🎯 REMEMBER
+
+**The "unification" happens at the infrastructure level (Redis + PostgreSQL), NOT at the code level.** Each service is independent but shares the same infrastructure via Railway shared variables.

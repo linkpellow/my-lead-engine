@@ -1,0 +1,106 @@
+# Root-level .gitignore for my-lead-engine
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Environment variables
+.env
+.env.local
+.env*.local
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Node modules (from brainscraper)
+brainscraper/node_modules/
+brainscraper/.next/
+brainscraper/out/
+brainscraper/build/
+brainscraper/.vercel/
+brainscraper/*.tsbuildinfo
+
+# Python (from scrapegoat)
+scrapegoat/__pycache__/
+scrapegoat/*/__pycache__/
+scrapegoat/*/*/__pycache__/
+scrapegoat/*/*/*/__pycache__/
+scrapegoat/*.py[cod]
+scrapegoat/*.pyo
+scrapegoat/*.pyd
+scrapegoat/.Python
+scrapegoat/*.egg-info/
+scrapegoat/*.dist-info/
+scrapegoat/.pytest_cache/
+scrapegoat/.coverage
+scrapegoat/htmlcov/
+
+# Python Virtual Environments (CRITICAL - never commit these)
+scrapegoat/venv/
+scrapegoat/.venv/
+scrapegoat/env/
+scrapegoat/bin/
+scrapegoat/lib/
+scrapegoat/include/
+scrapegoat/pyvenv.cfg
+
+# Redundant/Backup Folders (CRITICAL)
+scrapegoat/web/
+*_backup/
+*_backup
+
+# Node modules safety (applies everywhere)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker
+.docker/
+
+# Test results
+test-results/
+coverage/
+
+# Large data files
+*.csv
+*.har
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!vitest.config.ts
+
+# API results and data directories
+brainscraper/data/api-results/
+scrapegoat/har_input/
+scrapegoat/generated_bots/
+
+# Credentials and tokens
+*_token.json
+harvested-*.json
+extracted-tokens.json
+
+# Rust build
+chimera-core/target/
+target/

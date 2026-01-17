@@ -1,0 +1,284 @@
+---
+description: "The General (Node.js/Next.js) - Orchestrator and Lead Management"
+alwaysApply: false
+globs:
+  - "brainscraper/**"
+  - "**/brainscraper/**"
+---
+
+# THE GENERAL: NODE.JS/NEXT.JS ORCHESTRATOR
+
+## 🎖️ SERVICE OVERVIEW
+
+**Location:** `/brainscraper`  
+**Technology:** Node.js, Next.js 14  
+**Role:** Orchestrator - Manages UI, API routes, and lead data
+
+---
+
+## 🎯 CORE RESPONSIBILITIES
+
+### 1. API Routes (50+ Endpoints)
+- Lead discovery and scraping
+- Enrichment aggregation
+- Settings management
+- Usage tracking and cooldown management
+- Redis queue integration
+
+### 2. User Interface
+- Lead generation UI (LinkedIn, Facebook)
+- Enriched leads viewer
+- Settings and configuration
+- Usage statistics and monitoring
+
+### 3. Lead Data Management
+- PostgreSQL integration
+- Data aggregation and merging
+- CSV export and formatting
+- Filtering and search
+
+---
+
+## 🚨 CRITICAL: ZERO REGRESSION PROTOCOL
+
+### The 50+ API Routes Are Sacred
+**Rule:** Never modify existing API routes unless explicitly requested
+
+**Protected Routes:**
+- `/api/aggregate-enriched-leads` - Lead aggregation (see `data-protection.mdc`)
+- `/api/load-enriched-results` - Lead retrieval
+- `/api/settings/*` - Settings management
+- `/api/scrape-history/*` - Usage tracking
+- All other existing routes in `app/api/`
+
+**What This Means:**
+- ✅ **DO:** Add new routes when needed
+- ✅ **DO:** Fix bugs if explicitly asked
+- ❌ **DON'T:** Refactor existing routes "to improve them"
+- ❌ **DON'T:** Change route signatures without explicit permission
+- ❌ **DON'T:** Remove or consolidate routes
+
+---
+
+## 🔧 TECHNICAL REQUIREMENTS
+
+### Next.js Version
+**MUST USE:** Next.js 14  
+**Build Command:** `npm run build` (must use `--webpack` flag)
+
+**Critical:** Custom `next.config.js` requires webpack (Turbopack incompatible)
+
+### Node.js Version
+**Specified in:** `.nvmrc` or `package.json`  
+**Default:** Node.js 20 (LTS)
+
+### Import Strategy
+**Use:** Next.js 14 conventions
+- `@/` alias for app directory
+- Relative imports for local files
+- Absolute imports for shared utilities
+
+**Example:**
+```typescript
+// ✅ CORRECT
+import { checkScrapeLimit } from '@/utils/scrapeUsageTracker';
+import { Lead } from '@/types/lead';
+import redis from '@/lib/redis';
+
+// ❌ WRONG (if in app directory)
+import { checkScrapeLimit } from '../../utils/scrapeUsageTracker';
+```
+
+---
+
+## 📁 PROJECT STRUCTURE
+
+```
+brainscraper/
+├── app/
+│   ├── api/                    # 50+ API routes (DO NOT MODIFY)
+│   │   ├── aggregate-enriched-leads/
+│   │   ├── load-enriched-results/
+│   │   ├── settings/
+│   │   └── ...
+│   │
+│   ├── components/            # React components
+│   │   ├── LinkedInLeadGenerator.tsx
+│   │   └── FacebookLeadGenerator.tsx
+│   │
+│   ├── enriched/              # Enriched leads viewer
+│   ├── settings/              # Settings page
+│   └── page.tsx               # Home page
+│
+├── utils/                      # Utility functions
+│   ├── scrapeUsageTracker.ts  # Usage tracking
+│   ├── cooldownManager.ts      # Cooldown management
+│   └── redis.ts                # Redis client
+│
+├── lib/                        # Library code
+│   └── redis.ts               # Redis connection
+│
+├── types/                      # TypeScript types
+│   └── lead.ts                # Lead data types
+│
+├── package.json
+├── next.config.js              # Must use webpack
+└── .nvmrc                      # Node.js version
+```
+
+---
+
+## 🔗 gRPC INTEGRATION (NEW)
+
+### Communicating with The Brain
+**Protocol:** gRPC over Railway's private network  
+**Contract:** `@proto/chimera.proto`
+
+**Install gRPC:**
+```bash
+npm install @grpc/grpc-js @grpc/proto-loader
+```
+
+**Generate TypeScript Types:**
+```bash
+# Use protoc or grpc-tools to generate TypeScript types
+# Or use @grpc/proto-loader for dynamic loading
+```
+
+**Example Client:**
+```typescript
+// lib/grpc/brain-client.ts
+import * as grpc from '@grpc/grpc-js';
+import * as protoLoader from '@grpc/proto-loader';
+
+const PROTO_PATH = '../../@proto/chimera.proto';
+
+const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
+  keepCase: true,
+  longs: String,
+  enums: String,
+  defaults: true,
+  oneofs: true
+});
+
+const proto = grpc.loadPackageDefinition(packageDefinition) as any;
+const brainClient = new proto.chimera.Brain(
+  'chimera-brain:50051',  // Railway private network
+  grpc.credentials.createInsecure()
+);
+
+export async function processVision(screenshot: Buffer): Promise<any> {
+  return new Promise((resolve, reject) => {
+    brainClient.ProcessVision({ screenshot }, (error: any, response: any) => {
+      if (error) reject(error);
+      else resolve(response);
+    });
+  });
+}
+```
+
+---
+
+## 🚨 CRITICAL RULES
+
+### 1. Zero Regression
+- ✅ **Preserve all 50+ API routes** exactly as they are
+- ✅ **Maintain existing functionality** at all costs
+- ❌ **Never refactor routes** "to make them better"
+- ❌ **Never consolidate routes** without explicit permission
+
+### 2. Data Protection
+- ✅ **Follow `data-protection.mdc` rules** strictly
+- ✅ **Never overwrite enriched leads**
+- ✅ **Always merge, never replace**
+- ✅ **Use deduplication keys** (LinkedIn URL or name+email+phone)
+
+### 3. Service Boundaries
+- ✅ **Communicate with The Brain via gRPC** (not direct imports)
+- ✅ **Use Railway's private network** for service-to-service calls
+- ❌ **No Python or Rust dependencies** in Node.js code
+- ✅ **Keep Node.js silo pure**
+
+### 4. Build Requirements
+- ✅ **Must use `--webpack` flag** (Turbopack incompatible)
+- ✅ **Standalone output** configured in `next.config.js`
+- ✅ **Node.js 20** (from `.nvmrc`)
+
+---
+
+## 📊 EXISTING PATTERNS TO PRESERVE
+
+### Redis Queue Integration
+```typescript
+// utils/redis.ts (existing pattern)
+import { createClient } from 'redis';
+
+const redisClient = createClient({
+  url: process.env.REDIS_URL || 'redis://localhost:6379'
+});
+
+await redisClient.connect();
+
+export async function pushLeadToQueue(lead: LeadQueueItem): Promise<void> {
+  await redisClient.lPush('leads_to_enrich', JSON.stringify(lead));
+}
+```
+
+### Usage Tracking
+```typescript
+// utils/scrapeUsageTracker.ts (existing pattern)
+import { incrementScrapeCount, checkScrapeLimit } from '@/utils/scrapeUsageTracker';
+
+// Before scraping
+const limitCheck = await checkScrapeLimit('linkedin', dailyLimit, monthlyLimit);
+if (!limitCheck.allowed) {
+  throw new Error(`Limit reached: ${limitCheck.limitType}`);
+}
+
+// After successful scrape
+await incrementScrapeCount('linkedin', results.length);
+```
+
+### Cooldown Management
+```typescript
+// utils/cooldownManager.ts (existing pattern)
+import { isInCooldown, recordError } from '@/utils/cooldownManager';
+
+// Before scraping
+if (await isInCooldown()) {
+  throw new Error('System in cooldown');
+}
+
+// On error
+try {
+  await scrapeLinkedIn(params);
+} catch (error) {
+  await recordError();
+  throw error;
+}
+```
+
+---
+
+## ✅ SUCCESS CRITERIA
+
+A properly maintained General service:
+
+- ✅ All 50+ API routes remain functional
+- ✅ No regressions in existing functionality
+- ✅ Data protection rules are followed
+- ✅ Can communicate with The Brain via gRPC
+- ✅ Redis queue integration works
+- ✅ Usage tracking and cooldown management work
+- ✅ Build succeeds with `--webpack` flag
+- ✅ No Python or Rust dependencies
+- ✅ Service is independently deployable on Railway
+
+---
+
+## 🎯 REMEMBER
+
+**The General orchestrates:** It coordinates, it doesn't execute scraping directly.  
+**Zero regression is critical:** Existing routes are sacred.  
+**gRPC for new features:** Use gRPC to communicate with The Brain, not direct imports.  
+**Preserve existing patterns:** Don't refactor working code.

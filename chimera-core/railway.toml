@@ -1,0 +1,12 @@
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+startCommand = "./chimera-worker"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[env]
+RUST_LOG = "info"
+RAILWAY_ENVIRONMENT = "production"
+CHIMERA_BRAIN_ADDRESS = "http://chimera-brain.railway.internal:50051"

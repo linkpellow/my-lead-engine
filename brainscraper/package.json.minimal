@@ -1,0 +1,1 @@
+{"name":"brainscraper.io","version":"1.0.0","private":true,"scripts":{"dev":"next dev","build":"next build","start":"node server.js","start:next":"next start"},"dependencies":{"next":"^16.0.10","react":"^19.2.0","react-dom":"^19.2.0","ioredis":"^5.9.2"}}

@@ -1,0 +1,429 @@
+---
+description: "Unified Lead Engine Architecture: BrainScraper + Scrapegoat Integration Map"
+alwaysApply: true
+globs:
+  - "brainscraper/**"
+  - "scrapegoat/**"
+  - "docker-compose.yml"
+  - "railway.toml"
+---
+
+# Unified Lead Engine Architecture - Complete Integration Map
+
+## 🚀 MISSION ALPHA: TRIPLE-VESSEL SYSTEM
+
+**NEW ARCHITECTURE:** We are transitioning to a **Triple-Vessel Stealth Extraction Engine** with three isolated services:
+- **The General** (`/brainscraper`) - Node.js/Next.js orchestrator
+- **The Brain** (`/chimera-brain`) - Python 3.11 AI service (NEW)
+- **The Body** (`/chimera-core`) - Rust stealth worker swarm (NEW)
+
+**See:** `.cursor/rules/000-mission-alpha.mdc` for complete Mission Alpha documentation.
+
+**Current Status:** Check `.notes/status.md` for current integration phase.
+
+---
+
+## 🎯 CRITICAL: Unorthodox Architecture Understanding
+
+**This is NOT a traditional monorepo.** This system combines **TWO SEPARATE CODEBASES** (`/brainscraper` and `/scrapegoat`) into a unified process via Railway deployment. They communicate through Redis, not direct code imports.
+
+**NOTE:** Mission Alpha adds two new services (`/chimera-brain` and `/chimera-core`) that communicate via gRPC. The existing BrainScraper + Scrapegoat architecture remains intact and functional.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    RAILWAY PLATFORM                          │
+│                                                               │
+│  ┌──────────────────┐         ┌──────────────────┐          │
+│  │  BrainScraper    │         │   Scrapegoat      │          │
+│  │  (Next.js)       │         │   (FastAPI)      │          │
+│  │  Port: 3000      │         │   Port: 8000     │          │
+│  │  Root: /brainscraper│      │   Root: /scrapegoat│        │
+│  └────────┬─────────┘         └────────┬─────────┘          │
+│           │                             │                    │
+│           │  LPUSH leads_to_enrich      │                    │
+│           ├─────────────────────────────┤                    │
+│           │                             │                    │
+│           ▼                             ▼                    │
+│  ┌─────────────────────────────────────────────┐              │
+│  │         Redis Bridge (Shared)              │              │
+│  │  Queue: leads_to_enrich                    │              │
+│  │  DLQ: failed_leads                         │              │
+│  └─────────────────────────────────────────────┘              │
+│           │                             │                    │
+│           │                             │ BRPOP              │
+│           │                             │                    │
+│           │         ┌─────────────────────┘                  │
+│           │         │                                         │
+│           ▼         ▼                                         │
+│  ┌─────────────────────────────────────────────┐              │
+│  │      PostgreSQL (Shared Database)          │              │
+│  │      Table: leads                          │              │
+│  └─────────────────────────────────────────────┘              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📋 THE 5-PHASE PROCESS (Your Map to Success)
+
+### Phase 1: Lead Discovery (The Producer)
+**Service:** BrainScraper.io (`/brainscraper`)
+**Location:** `brainscraper/app/components/LinkedInLeadGenerator.tsx` or `FacebookLeadGenerator.tsx`
+
+**Process:**
+1. User initiates search via Next.js UI (LinkedIn Sales Navigator or Facebook Discovery)
+2. System calls `premium_search_person` endpoint via RapidAPI
+   - API: `https://realtime-linkedin-sales-navigator-data.p.rapidapi.com/premium_search_person`
+   - Headers: `x-rapidapi-key`, `x-rapidapi-host`
+   - Uses `RAPIDAPI_KEY` environment variable
+3. **Post-Filter Validation:** Ensures leads match exact requested location text before proceeding
+4. **Handover to Redis:** Executes `LPUSH` command to Redis queue `leads_to_enrich`
+   - Format: JSON string with `{ linkedinUrl, name, location, ... }`
+   - Redis connection: `REDIS_URL` environment variable (shared with scrapegoat)
+
+**Key Files:**
+- `brainscraper/app/components/LinkedInLeadGenerator.tsx` - LinkedIn scraping UI
+- `brainscraper/app/components/FacebookLeadGenerator.tsx` - Facebook discovery UI
+- `brainscraper/utils/scrapeUsageTracker.ts` - Track daily/monthly usage (NEW)
+- `brainscraper/utils/cooldownManager.ts` - Error spike detection (NEW)
+
+**Integration Points:**
+- Before pushing to Redis, check: `checkScrapeLimit()`, `isInCooldown()`
+- After successful scrape, call: `incrementScrapeCount()`
+- On errors, call: `recordError()` for cooldown management
+
+---
+
+### Phase 2: The Redis Bridge (The Buffer)
+**Infrastructure:** `redis-bridge` (Railway Shared Variable)
+
+**Role:**
+- Acts as "Holding Bay" for raw lead data
+- Decouples high-speed discovery (Phase 1) from intensive AI processing (Phase 3)
+- **Critical:** If enrichment workers crash, no leads are lost (persistent queue)
+
+**Queue Names:**
+- `leads_to_enrich` - Main queue (FIFO)
+- `failed_leads` - Dead Letter Queue (DLQ) for failed enrichments after 3 retries
+
+**Format:**
+```json
+{
+  "linkedinUrl": "https://linkedin.com/in/...",
+  "name": "John Doe",
+  "location": "Naples, Florida, United States",
+  "title": "Software Engineer",
+  "company": "Acme Corp",
+  "platform": "linkedin",
+  "sourceDetails": { ... }
+}
+```
+
+**Environment Variables (Both Services):**
+- `REDIS_URL=${{redis-bridge.REDIS_URL}}` - Railway shared variable syntax
+
+---
+
+### Phase 3: The Enrichment Swarm (The Consumer)
+**Service:** Scrapegoat Worker (`/scrapegoat`)
+**Location:** `scrapegoat/app/workers/redis_queue_worker.py` (or `start_redis_worker.py`)
+
+**Process:**
+1. **Polling:** 5+ autonomous "Bees" (worker replicas) constantly run `BRPOP` on `leads_to_enrich` queue
+2. **Identity Resolution:** Resolves raw LinkedIn data into verifiable US identity
+3. **Skip-Tracing:** Calls Skip-Tracing API to find valid phone numbers and emails
+   - API: `https://skip-tracing-working-api.p.rapidapi.com/search/byemail` or `/bynameaddress`
+   - Uses `RAPIDAPI_KEY` or `RAPIDAPI_KEY_SKIP_TRACING`
+4. **Telnyx Gatekeep:** Validates phone number
+   - If VOIP/Landline or junk carrier → **STOP HERE** (save costs)
+   - Only mobile numbers proceed
+5. **USHA DNC Scrub:** Checks number against Do-Not-Call registry
+   - API: `https://api-business-agent.ushadvisors.com/Leads/api/leads/scrubphonenumber`
+   - Uses `USHA_JWT_TOKEN` or `COGNITO_REFRESH_TOKEN`
+6. **Demographic Enrichment:** If lead passes Gatekeep, pulls US census data
+   - Median Income, Age, Address
+   - API: Census API or `household-income-by-zip-code.p.rapidapi.com`
+   - Uses `CENSUS_API_KEY`
+7. **The Trauma Center (Self-Healing):** If public record sites change UI
+   - Vision LLMs (OpenAI) autonomously re-map selectors
+   - Uses `OPENAI_API_KEY` for self-healing capabilities
+
+**Key Files:**
+- `scrapegoat/app/workers/redis_queue_worker.py` - Main worker loop
+- `scrapegoat/app/smartfields/patterns/` - Pattern recognition (address, email, phone, etc.)
+- `scrapegoat/main.py` - FastAPI service (health checks, queue status)
+
+**Retry Logic:**
+- `MAX_RETRIES = 3` - Maximum retry attempts
+- `RETRY_DELAY_BASE = 5` - Base delay in seconds (exponential backoff)
+- After 3 failures → Push to `failed_leads` DLQ
+
+---
+
+### Phase 4: Permanent Memory (Persistence)
+**Infrastructure:** PostgreSQL (Railway Shared Variable)
+
+**Process:**
+1. Once a "Bee" completes enrichment, writes final record to `leads` table in PostgreSQL
+2. **Deduplication:** Uses unique key (LinkedIn URL or Name+Email+Phone) to prevent duplicate enrichment costs
+3. **Fail-Safe (DLQ):** If lead fails enrichment 3 times → moved to `failed_leads` queue
+   - Can be inspected via Scrapegoat Internal UI
+   - Manual retry via API: `POST /dlq/retry/{item_index}`
+
+**Database Schema (Expected):**
+```sql
+CREATE TABLE leads (
+  id SERIAL PRIMARY KEY,
+  linkedin_url VARCHAR(255) UNIQUE,
+  name VARCHAR(255),
+  phone VARCHAR(20),
+  email VARCHAR(255),
+  city VARCHAR(100),
+  state VARCHAR(50),
+  zipcode VARCHAR(10),
+  age INTEGER,
+  income VARCHAR(50),
+  dnc_status VARCHAR(20),
+  can_contact BOOLEAN,
+  enriched_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+**Environment Variables:**
+- `DATABASE_URL=${{PostgreSQL.DATABASE_URL}}` - Railway shared variable
+
+---
+
+### Phase 5: Result Visualization (The Dashboard)
+**Service:** BrainScraper.io (UI Layer)
+**Location:** `brainscraper/app/enriched/page.tsx`
+
+**Process:**
+1. Next.js UI queries PostgreSQL database via `/api/load-enriched-results`
+2. Displays final list of leads (target: 10,000 leads/week)
+3. **Filters:**
+   - Age ≤ 59
+   - Income thresholds
+   - "Safe to Call" status (DNC checked and passed)
+
+**Key Files:**
+- `brainscraper/app/enriched/page.tsx` - Main enriched leads viewer
+- `brainscraper/app/api/load-enriched-results/route.ts` - API endpoint (if exists)
+- `brainscraper/utils/extractLeadSummary.ts` - Lead summary extraction
+
+---
+
+## 🔧 RAILWAY DEPLOYMENT REQUIREMENTS
+
+### Critical Settings for Each Service
+
+#### BrainScraper Service
+**Railway Dashboard:**
+- **Root Directory:** `brainscraper` (NOT root!)
+- **Watch Paths:** `brainscraper/**`
+- **Port:** `3000` (from env var)
+- **Build Command:** `npm run build` (must use `--webpack` flag to avoid Turbopack errors)
+- **Start Command:** `npm start`
+
+**Environment Variables:**
+```bash
+NODE_ENV=production
+PORT=3000
+REDIS_URL=${{redis-bridge.REDIS_URL}}
+DATABASE_URL=${{PostgreSQL.DATABASE_URL}}
+NEXT_PUBLIC_BASE_URL=https://brainscraper.io
+DATA_DIR=/data
+RAPIDAPI_KEY=your-key
+USHA_JWT_TOKEN=your-token
+```
+
+**Build Configuration:**
+- Must use `next build --webpack` (NOT Turbopack)
+- Custom config in `next.config.js` requires webpack
+
+#### Scrapegoat Service
+**Railway Dashboard:**
+- **Root Directory:** `scrapegoat` (NOT root!)
+- **Watch Paths:** `scrapegoat/**`
+- **Port:** `8000` (auto-assigned)
+- **Build Command:** `pip install -r requirements.txt && playwright install chromium`
+- **Start Command:** `python main.py`
+
+**Environment Variables:**
+```bash
+PYTHONUNBUFFERED=1
+DATABASE_URL=${{PostgreSQL.DATABASE_URL}}
+APP_DATABASE_URL=${{PostgreSQL.DATABASE_URL}}
+REDIS_URL=${{redis-bridge.REDIS_URL}}
+APP_REDIS_URL=${{redis-bridge.REDIS_URL}}
+APP_CELERY_BROKER_URL=${{redis-bridge.REDIS_URL}}/1
+APP_CELERY_RESULT_BACKEND=${{redis-bridge.REDIS_URL}}/2
+OPENAI_API_KEY=sk-proj-...
+CENSUS_API_KEY=b4f15ee777...
+RAPIDAPI_KEY=your-key
+```
+
+#### Scrapegoat Worker Service (5+ Replicas)
+**Railway Dashboard:**
+- **Root Directory:** `scrapegoat` (same as main service)
+- **Watch Paths:** `scrapegoat/**`
+- **Start Command:** `python start_redis_worker.py`
+- **Scaling:** 5 replicas (or more for higher throughput)
+
+**Environment Variables:**
+- Same as Scrapegoat service above
+
+---
+
+## 🔗 CRITICAL INTEGRATION POINTS
+
+### 1. Redis Queue Format
+**Producer (BrainScraper):**
+```typescript
+// In brainscraper (TypeScript)
+import redis from 'redis';
+const client = redis.createClient({ url: process.env.REDIS_URL });
+
+await client.lPush('leads_to_enrich', JSON.stringify({
+  linkedinUrl: lead.profileUrl,
+  name: lead.name,
+  location: lead.location,
+  title: lead.title,
+  company: lead.company,
+  platform: 'linkedin',
+  sourceDetails: { ... }
+}));
+```
+
+**Consumer (Scrapegoat):**
+```python
+# In scrapegoat (Python)
+import redis
+import json
+
+redis_client = redis.from_url(os.getenv("REDIS_URL"))
+
+# Worker loop
+while True:
+    result = redis_client.brpop('leads_to_enrich', timeout=10)
+    if result:
+        queue_name, lead_json = result
+        lead_data = json.loads(lead_json)
+        # Process lead...
+```
+
+### 2. PostgreSQL Write Format
+**After Enrichment (Scrapegoat):**
+```python
+# Write to PostgreSQL
+import psycopg2
+
+conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+cur = conn.cursor()
+
+cur.execute("""
+    INSERT INTO leads (linkedin_url, name, phone, email, city, state, zipcode, age, income, dnc_status, can_contact, enriched_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+    ON CONFLICT (linkedin_url) DO NOTHING
+""", (lead_data['linkedinUrl'], name, phone, email, city, state, zipcode, age, income, dnc_status, can_contact))
+
+conn.commit()
+```
+
+### 3. BrainScraper Query Format
+**Read from PostgreSQL (BrainScraper):**
+```typescript
+// In brainscraper API route
+import { Pool } from 'pg';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const result = await pool.query(`
+  SELECT * FROM leads 
+  WHERE age <= 59 
+    AND can_contact = true 
+    AND enriched_at IS NOT NULL
+  ORDER BY enriched_at DESC
+  LIMIT 10000
+`);
+```
+
+---
+
+## 🚨 CRITICAL RULES & CONSTRAINTS
+
+### Data Protection (See `.cursorrules`)
+- **NEVER** overwrite existing enriched leads
+- **NEVER** delete `enriched-all-leads.json`
+- Always merge, never replace
+- Use deduplication keys (LinkedIn URL or name+email+phone)
+
+### Service Boundaries
+- **BrainScraper** = Producer (scrapes, pushes to Redis)
+- **Scrapegoat** = Consumer (pulls from Redis, enriches, writes to PostgreSQL)
+- **NO direct code imports** between services
+- **ONLY communication:** Redis queue + PostgreSQL database
+
+### Railway Shared Variables
+- Use `${{service-name.VARIABLE_NAME}}` syntax
+- Both services MUST point to same `REDIS_URL` and `DATABASE_URL`
+- This is how they "unify" - via shared infrastructure, not code
+
+### Build Requirements
+- BrainScraper: Must use `--webpack` flag (Turbopack incompatible with custom config)
+- Scrapegoat: Must install Playwright (`playwright install chromium`)
+
+---
+
+## 📁 KEY FILE LOCATIONS
+
+### BrainScraper (`/brainscraper`)
+- **Scraping UI:** `app/components/LinkedInLeadGenerator.tsx`, `FacebookLeadGenerator.tsx`
+- **Settings:** `app/settings/page.tsx`
+- **Enriched Viewer:** `app/enriched/page.tsx`
+- **Usage Tracking:** `utils/scrapeUsageTracker.ts` (NEW)
+- **Cooldown Manager:** `utils/cooldownManager.ts` (NEW)
+- **API Routes:** `app/api/settings/route.ts`, `app/api/scrape-history/route.ts`
+- **Redis Integration:** Should be in `lib/redis.ts` or `utils/redis.ts` (may need to create)
+
+### Scrapegoat (`/scrapegoat`)
+- **Main API:** `main.py` (FastAPI service)
+- **Worker:** `start_redis_worker.py` or `app/workers/redis_queue_worker.py`
+- **SmartFields:** `app/smartfields/patterns/` (address, email, phone, etc.)
+- **Spiders:** `app/scraping/spiders/` (web scraping logic)
+- **DLQ API:** `app/api/dlq.py` (Dead Letter Queue management)
+
+### Shared Infrastructure
+- **Docker Compose:** `docker-compose.yml` (local dev only)
+- **Railway Config:** `brainscraper/railway.toml`, `scrapegoat/railway.toml`
+- **Documentation:** `README_REDIS_BRIDGE.md`, `MONOREPO_RAILWAY_SETUP.md`
+
+---
+
+## ✅ SUCCESS CHECKLIST
+
+When implementing features, verify:
+
+1. ✅ **Service Isolation:** Code changes stay in correct service directory
+2. ✅ **Redis Format:** Queue messages match expected JSON structure
+3. ✅ **PostgreSQL Schema:** Database writes match expected table structure
+4. ✅ **Railway Config:** Root directories and watch paths are correct
+5. ✅ **Shared Variables:** Both services use `${{...}}` syntax for Redis/DB
+6. ✅ **Data Protection:** Never overwrite existing enriched leads
+7. ✅ **Build Flags:** BrainScraper uses `--webpack`, Scrapegoat installs Playwright
+8. ✅ **Environment Variables:** All required keys are set in Railway
+9. ✅ **Worker Scaling:** Scrapegoat worker has 5+ replicas for throughput
+10. ✅ **Error Handling:** Failed leads go to DLQ after 3 retries
+
+---
+
+## 🎯 REMEMBER
+
+**This is an unorthodox architecture:** Two separate codebases unified via Railway shared infrastructure (Redis + PostgreSQL), NOT via code imports. The "unification" happens at the infrastructure level, not the code level.
+
+**Your goal:** 10,000 enriched leads/week with Age ≤ 59, Income data, and "Safe to Call" status.
+
+**Your map:** This document. Follow the 5 phases, respect service boundaries, and always protect existing enriched data.

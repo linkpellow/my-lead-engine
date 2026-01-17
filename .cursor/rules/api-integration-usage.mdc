@@ -1,0 +1,393 @@
+---
+description: "API Integration Patterns - Usage Tracking, Cooldown Management, and Rate Limiting"
+alwaysApply: false
+globs:
+  - "brainscraper/utils/scrapeUsageTracker.ts"
+  - "brainscraper/utils/cooldownManager.ts"
+  - "brainscraper/utils/apiRegistry.ts"
+  - "brainscraper/app/api/**"
+---
+
+# API Integration & Usage Management
+
+## 🎯 Purpose
+
+Manage API usage, rate limiting, cooldown periods, and cost optimization across the BrainScraper service.
+
+---
+
+## 📊 USAGE TRACKING (scrapeUsageTracker.ts)
+
+### Purpose
+Track daily and monthly scraping usage for rate limiting and quota management.
+
+### Key Functions
+
+#### `incrementScrapeCount(service, count)`
+```typescript
+import { incrementScrapeCount } from '@/utils/scrapeUsageTracker';
+
+// After successful scrape
+await incrementScrapeCount('linkedin', 1);
+// or for batch
+await incrementScrapeCount('facebook', 25);
+```
+
+**Storage:**
+- File: `data/scrape-usage.json`
+- Format:
+```json
+{
+  "daily": {
+    "2025-01-15": 150,
+    "2025-01-16": 200
+  },
+  "monthly": {
+    "2025-01": 3500
+  },
+  "lastUpdated": "2025-01-16T10:30:00Z"
+}
+```
+
+#### `getDailyUsage(service)`
+```typescript
+const dailyCount = await getDailyUsage('linkedin');
+console.log(`Today's usage: ${dailyCount}`);
+```
+
+#### `getMonthlyUsage(service)`
+```typescript
+const monthlyCount = await getMonthlyUsage('linkedin');
+console.log(`This month's usage: ${monthlyCount}`);
+```
+
+#### `checkScrapeLimit(service, dailyLimit, monthlyLimit)`
+```typescript
+const limitCheck = await checkScrapeLimit('linkedin', 500, 10000);
+
+if (!limitCheck.allowed) {
+  throw new Error(
+    `${limitCheck.limitType} limit reached: ${limitCheck.currentCount}/${limitCheck.limit}`
+  );
+}
+```
+
+**Return Value:**
+```typescript
+{
+  allowed: boolean;
+  limitType?: 'daily' | 'monthly';
+  currentCount: number;
+  limit: number;
+}
+```
+
+### Integration Pattern
+```typescript
+// Before scraping
+const limitCheck = await checkScrapeLimit('linkedin', dailyLimit, monthlyLimit);
+if (!limitCheck.allowed) {
+  return { error: `Limit reached: ${limitCheck.limitType}` };
+}
+
+// Perform scrape
+const results = await scrapeLinkedIn(params);
+
+// After successful scrape
+await incrementScrapeCount('linkedin', results.length);
+
+return { success: true, results };
+```
+
+---
+
+## 🛡️ COOLDOWN MANAGEMENT (cooldownManager.ts)
+
+### Purpose
+Prevent system overload by implementing cooldown periods after error spikes.
+
+### Configuration
+```typescript
+const COOLDOWN_DURATION = 5 * 60 * 1000; // 5 minutes
+const ERROR_THRESHOLD = 5; // Number of errors before cooldown
+const ERROR_WINDOW = 60 * 1000; // 1 minute window
+```
+
+### Key Functions
+
+#### `recordError()`
+```typescript
+import { recordError } from '@/utils/cooldownManager';
+
+try {
+  await scrapeLinkedIn(params);
+} catch (error) {
+  await recordError(); // Record error for cooldown tracking
+  throw error;
+}
+```
+
+**Behavior:**
+- Tracks errors in 1-minute sliding window
+- If 5+ errors in 1 minute → Activates 5-minute cooldown
+- Logs cooldown activation with timestamp
+
+#### `isInCooldown()`
+```typescript
+import { isInCooldown } from '@/utils/cooldownManager';
+
+// Before scraping
+if (await isInCooldown()) {
+  const remaining = await getCooldownRemaining();
+  throw new Error(`System in cooldown. Wait ${remaining}ms`);
+}
+```
+
+#### `getCooldownRemaining()`
+```typescript
+import { getCooldownRemaining } from '@/utils/cooldownManager';
+
+const remaining = await getCooldownRemaining();
+if (remaining > 0) {
+  console.log(`Cooldown active. ${remaining}ms remaining`);
+}
+```
+
+#### `clearCooldown()`
+```typescript
+import { clearCooldown } from '@/utils/cooldownManager';
+
+// Manual override (for admin/testing)
+await clearCooldown();
+```
+
+### Integration Pattern
+```typescript
+// Before scraping
+if (await isInCooldown()) {
+  const remaining = await getCooldownRemaining();
+  return { 
+    error: `System in cooldown. Resumes in ${Math.ceil(remaining / 1000)}s` 
+  };
+}
+
+try {
+  const results = await scrapeLinkedIn(params);
+  return { success: true, results };
+} catch (error) {
+  await recordError(); // Record for cooldown
+  throw error;
+}
+```
+
+---
+
+## 🔌 API REGISTRY (apiRegistry.ts)
+
+### Purpose
+Manage API keys and endpoint configurations centrally.
+
+### Usage
+```typescript
+import { API_REGISTRY, getAllAPIKeys, getAPIKey } from '@/utils/apiRegistry';
+
+// Get all API keys
+const keys = getAllAPIKeys();
+const rapidApiKey = keys.RAPIDAPI_KEY;
+
+// Get specific API key
+const linkedinKey = getAPIKey('linkedin');
+
+// Check API config
+const linkedinConfig = API_REGISTRY.linkedin;
+console.log(`Rate limit: ${linkedinConfig.rateLimit}/min`);
+```
+
+### Adding New APIs
+```typescript
+export const API_REGISTRY: Record<string, APIConfig> = {
+  // ... existing APIs
+  newService: {
+    name: 'New Service',
+    baseUrl: 'https://api.newservice.com',
+    requiresAuth: true,
+    rateLimit: 100, // requests per minute
+  },
+};
+```
+
+---
+
+## 🚦 RATE LIMITING PATTERNS
+
+### Pattern 1: Pre-Check Before API Call
+```typescript
+async function callAPIWithLimits(endpoint: string, params: any) {
+  // 1. Check usage limits
+  const limitCheck = await checkScrapeLimit('linkedin', 500, 10000);
+  if (!limitCheck.allowed) {
+    throw new Error(`Limit reached: ${limitCheck.limitType}`);
+  }
+  
+  // 2. Check cooldown
+  if (await isInCooldown()) {
+    throw new Error('System in cooldown');
+  }
+  
+  // 3. Make API call
+  try {
+    const response = await fetch(endpoint, params);
+    
+    // 4. Track success
+    await incrementScrapeCount('linkedin', 1);
+    
+    return response;
+  } catch (error) {
+    // 5. Track error
+    await recordError();
+    throw error;
+  }
+}
+```
+
+### Pattern 2: Batch Processing with Limits
+```typescript
+async function scrapeBatch(leads: Lead[], service: string) {
+  const batchSize = 10;
+  let processed = 0;
+  
+  for (let i = 0; i < leads.length; i += batchSize) {
+    const batch = leads.slice(i, i + batchSize);
+    
+    // Check limits before each batch
+    const limitCheck = await checkScrapeLimit(service, 500, 10000);
+    if (!limitCheck.allowed) {
+      console.log(`Stopping: ${limitCheck.limitType} limit reached`);
+      break;
+    }
+    
+    // Check cooldown
+    if (await isInCooldown()) {
+      const remaining = await getCooldownRemaining();
+      console.log(`Cooldown active. Waiting ${remaining}ms...`);
+      await new Promise(resolve => setTimeout(resolve, remaining));
+    }
+    
+    // Process batch
+    try {
+      const results = await processBatch(batch);
+      await incrementScrapeCount(service, results.length);
+      processed += results.length;
+    } catch (error) {
+      await recordError();
+      // Continue with next batch
+    }
+    
+    // Rate limit delay between batches
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  return { processed, total: leads.length };
+}
+```
+
+---
+
+## 📈 USAGE STATISTICS API
+
+### Endpoint: `/api/settings/usage`
+```typescript
+// GET /api/settings/usage
+export async function GET(request: NextRequest) {
+  const dailyLinkedIn = await getDailyUsage('linkedin');
+  const monthlyLinkedIn = await getMonthlyUsage('linkedin');
+  const dailyFacebook = await getDailyUsage('facebook');
+  const monthlyFacebook = await getMonthlyUsage('facebook');
+  
+  return NextResponse.json({
+    success: true,
+    stats: {
+      linkedin: {
+        daily: dailyLinkedIn,
+        monthly: monthlyLinkedIn
+      },
+      facebook: {
+        daily: dailyFacebook,
+        monthly: monthlyFacebook
+      }
+    }
+  });
+}
+```
+
+---
+
+## ⚠️ CRITICAL RULES
+
+1. **Always Check Limits Before Scraping**
+   - Use `checkScrapeLimit()` before any API call
+   - Fail fast if limit reached
+
+2. **Always Check Cooldown**
+   - Use `isInCooldown()` before scraping
+   - Wait for cooldown to expire
+
+3. **Track Success**
+   - Call `incrementScrapeCount()` after successful scrape
+   - Track actual count (not attempted count)
+
+4. **Track Errors**
+   - Call `recordError()` on any API error
+   - This triggers cooldown if threshold reached
+
+5. **Use Service Names Consistently**
+   - Use: `'linkedin'`, `'facebook'`, `'skip-tracing'`
+   - Keep consistent across all tracking calls
+
+---
+
+## 🔧 INTEGRATION CHECKLIST
+
+When adding new scraping endpoints:
+
+- [ ] Import `checkScrapeLimit` and `isInCooldown`
+- [ ] Check limits before scraping
+- [ ] Check cooldown before scraping
+- [ ] Call `incrementScrapeCount()` on success
+- [ ] Call `recordError()` on failure
+- [ ] Add service to `API_REGISTRY` if needed
+- [ ] Add usage stats to `/api/settings/usage` endpoint
+
+---
+
+## 📊 MONITORING
+
+### View Current Usage
+```typescript
+const daily = await getDailyUsage('linkedin');
+const monthly = await getMonthlyUsage('linkedin');
+console.log(`LinkedIn: ${daily} today, ${monthly} this month`);
+```
+
+### Check Cooldown Status
+```typescript
+const inCooldown = await isInCooldown();
+if (inCooldown) {
+  const remaining = await getCooldownRemaining();
+  console.log(`Cooldown: ${Math.ceil(remaining / 1000)}s remaining`);
+}
+```
+
+### View Usage File
+```bash
+cat data/scrape-usage.json
+```
+
+---
+
+## 🎯 REMEMBER
+
+- **Usage tracking prevents quota overruns**
+- **Cooldown management prevents system overload**
+- **Always check before scraping, track after success**
+- **Errors trigger cooldown to protect the system**

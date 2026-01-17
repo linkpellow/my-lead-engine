@@ -1,0 +1,261 @@
+---
+description: "The Brain (Python 3.11) - VLM, World Modeling, and Hive Mind"
+alwaysApply: false
+globs:
+  - "chimera-brain/**"
+  - "**/chimera-brain/**"
+---
+
+# THE BRAIN: PYTHON 3.11 AI SERVICE
+
+## 🧠 SERVICE OVERVIEW
+
+**Location:** `/chimera-brain`  
+**Technology:** Python 3.11, PyTorch, Vector Databases  
+**Role:** Cortex - AI-driven reasoning and memory
+
+---
+
+## 🎯 CORE RESPONSIBILITIES
+
+### 1. Vision Language Model (VLM)
+- Process screenshots and visual data
+- Understand page structure and content
+- Generate natural language descriptions
+- Make decisions based on visual context
+
+### 2. World Modeling
+- Build mental models of target websites
+- Track state changes and page transitions
+- Predict likely outcomes of actions
+- Maintain context across sessions
+
+### 3. Hive Mind (Vector Memory)
+- Store and retrieve past experiences
+- Semantic search across lead data
+- Pattern recognition and learning
+- Shared knowledge across workers
+
+---
+
+## 🔧 TECHNICAL REQUIREMENTS
+
+### Python Version
+**MUST USE:** Python 3.11  
+**DO NOT USE:** Python 3.12, 3.10, or any other version
+
+**Verification:**
+```python
+import sys
+assert sys.version_info[:2] == (3, 11), "Must use Python 3.11"
+```
+
+### Import Strategy
+**MUST USE:** Absolute imports from `src/`
+
+**Correct Pattern:**
+```python
+# ✅ CORRECT
+from src.vlm.vision_processor import VisionProcessor
+from src.world_model.state_tracker import StateTracker
+from src.hive_mind.vector_store import VectorStore
+
+# ❌ WRONG
+from vlm.vision_processor import VisionProcessor  # Relative import
+from .vision_processor import VisionProcessor     # Relative import
+```
+
+### Dependencies
+**Core Libraries:**
+- PyTorch (for ML workloads)
+- Transformers (Hugging Face)
+- Vector database (Pinecone, Weaviate, or Qdrant)
+- gRPC (for service communication)
+
+**Example `requirements.txt`:**
+```txt
+torch>=2.0.0
+transformers>=4.30.0
+grpcio>=1.54.0
+grpcio-tools>=1.54.0
+# Vector DB (choose one)
+pinecone-client>=2.2.0
+# OR
+weaviate-client>=3.24.0
+```
+
+---
+
+## 📁 PROJECT STRUCTURE
+
+```
+chimera-brain/
+├── src/
+│   ├── vlm/
+│   │   ├── __init__.py
+│   │   ├── vision_processor.py    # Main VLM logic
+│   │   └── models.py              # Model definitions
+│   │
+│   ├── world_model/
+│   │   ├── __init__.py
+│   │   ├── state_tracker.py       # Track page state
+│   │   └── predictor.py           # Predict outcomes
+│   │
+│   ├── hive_mind/
+│   │   ├── __init__.py
+│   │   ├── vector_store.py        # Vector DB interface
+│   │   └── memory_manager.py      # Memory operations
+│   │
+│   └── grpc/
+│       ├── __init__.py
+│       ├── server.py              # gRPC server
+│       └── client.py              # gRPC client (for The Body)
+│
+├── proto/                         # Generated from @proto/chimera.proto
+│   └── chimera_pb2.py
+│
+├── requirements.txt
+├── pyproject.toml
+└── README.md
+```
+
+---
+
+## 🔗 gRPC INTEGRATION
+
+### Proto Contract
+**Source:** `@proto/chimera.proto` (shared across all services)
+
+**Generate Python Code:**
+```bash
+python -m grpc_tools.protoc \
+  --proto_path=../@proto \
+  --python_out=. \
+  --grpc_python_out=. \
+  ../@proto/chimera.proto
+```
+
+### gRPC Server Pattern
+```python
+import grpc
+from concurrent import futures
+from proto import chimera_pb2, chimera_pb2_grpc
+
+class BrainService(chimera_pb2_grpc.BrainServicer):
+    async def ProcessVision(self, request, context):
+        # VLM processing logic
+        result = await self.vlm_processor.process(request.screenshot)
+        return chimera_pb2.VisionResponse(result=result)
+    
+    async def QueryMemory(self, request, context):
+        # Hive Mind query
+        results = await self.hive_mind.search(request.query)
+        return chimera_pb2.MemoryResponse(results=results)
+
+async def serve():
+    server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
+    chimera_pb2_grpc.add_BrainServicer_to_server(BrainService(), server)
+    server.add_insecure_port('[::]:50051')
+    await server.start()
+    await server.wait_for_termination()
+```
+
+---
+
+## 🚨 CRITICAL RULES
+
+### 1. Isolation
+- ✅ **NO Node.js dependencies** (no `node_modules`, no npm packages)
+- ✅ **NO Rust dependencies** (no Cargo.toml, no Rust code)
+- ✅ **Pure Python 3.11** ecosystem only
+
+### 2. Import Discipline
+- ✅ **Always use absolute imports** from `src/`
+- ❌ **Never use relative imports** (`.`, `..`)
+- ✅ **Import paths must be explicit** and traceable
+
+### 3. Service Boundaries
+- ✅ **Communicate via gRPC** with other services
+- ❌ **No direct HTTP calls** to The General or The Body
+- ✅ **Use Railway's private network** for service-to-service communication
+
+### 4. AI Model Management
+- ✅ **Load models lazily** (on first use, not at startup)
+- ✅ **Cache model instances** to avoid reloading
+- ✅ **Handle model errors gracefully** (fallback strategies)
+
+---
+
+## 📊 EXAMPLE IMPLEMENTATIONS
+
+### VLM Vision Processor
+```python
+# src/vlm/vision_processor.py
+from typing import Dict, Any
+import torch
+from transformers import BlipProcessor, BlipForConditionalGeneration
+
+class VisionProcessor:
+    def __init__(self):
+        self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+        self.model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+    
+    async def process(self, screenshot: bytes) -> Dict[str, Any]:
+        """Process screenshot and return structured understanding"""
+        # VLM processing logic
+        inputs = self.processor(screenshot, return_tensors="pt")
+        out = self.model.generate(**inputs)
+        caption = self.processor.decode(out[0], skip_special_tokens=True)
+        
+        return {
+            "description": caption,
+            "confidence": 0.95,
+            "elements": []  # Extracted UI elements
+        }
+```
+
+### Hive Mind Vector Store
+```python
+# src/hive_mind/vector_store.py
+from typing import List, Dict, Any
+import pinecone
+
+class VectorStore:
+    def __init__(self, api_key: str, index_name: str):
+        pinecone.init(api_key=api_key, environment="us-west1-gcp")
+        self.index = pinecone.Index(index_name)
+    
+    async def store(self, text: str, metadata: Dict[str, Any]) -> str:
+        """Store text in vector database"""
+        # Embedding and storage logic
+        pass
+    
+    async def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Semantic search across stored memories"""
+        # Search logic
+        pass
+```
+
+---
+
+## ✅ SUCCESS CRITERIA
+
+A properly implemented Brain service:
+
+- ✅ Uses Python 3.11 exclusively
+- ✅ All imports are absolute from `src/`
+- ✅ Communicates via gRPC using shared proto contract
+- ✅ No Node.js or Rust dependencies
+- ✅ VLM can process screenshots and return structured data
+- ✅ World Model tracks state across sessions
+- ✅ Hive Mind stores and retrieves memories semantically
+- ✅ Service is independently deployable on Railway
+
+---
+
+## 🎯 REMEMBER
+
+**The Brain is an AI service:** Focus on ML/AI capabilities, not web scraping.  
+**Isolation is critical:** No dependencies on The General or The Body.  
+**gRPC is the interface:** All communication via proto contract.  
+**Python 3.11 only:** No version flexibility.

@@ -1,0 +1,226 @@
+---
+description: "Mission Alpha: Triple-Vessel Stealth Extraction Engine - Grand Strategy"
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+# MISSION ALPHA: PROJECT CHIMERA INTEGRATION
+
+## 🎯 CORE MISSION
+
+We are building a **Triple-Vessel Stealth Extraction Engine** that transforms the lead generation platform into a distributed, AI-driven extraction powerhouse. The system must be **mathematically and behaviorally indistinguishable from a human user**.
+
+---
+
+## 🏗️ THE ARCHITECTURAL TRINITY
+
+### 1. The General (Node.js/Next.js)
+**Location:** `/brainscraper`  
+**Technology:** Node.js, Next.js 14  
+**Role:** Orchestrator  
+**Responsibilities:**
+- Manages 50+ API routes
+- UI and lead enrichment logic
+- Lead data aggregation and visualization
+- Settings and configuration management
+
+**Critical Rules:**
+- ✅ **Zero Regression:** Never modify existing `/brainscraper` Node.js routes unless explicitly asked
+- ✅ **Preserve Existing:** All 50+ API routes must remain functional
+- ✅ **No Python/Rust Dependencies:** Keep Node.js silo pure
+
+---
+
+### 2. The Brain (Python 3.11)
+**Location:** `/chimera-brain`  
+**Technology:** Python 3.11, PyTorch, Vector DBs  
+**Role:** Cortex (AI Service)  
+**Responsibilities:**
+- VLM (Vision Language Model) reasoning
+- World Modeling
+- Hive Mind vector memory
+- AI-driven decision making
+
+**Critical Rules:**
+- ✅ **Python 3.11 Only:** Use Python 3.11, no other versions
+- ✅ **Absolute Imports:** Use absolute imports from `src/`
+- ✅ **PyTorch Ecosystem:** Leverage PyTorch for ML workloads
+- ✅ **Isolated Service:** No Node.js or Rust dependencies
+
+---
+
+### 3. The Body (Rust)
+**Location:** `/chimera-core`  
+**Technology:** Rust  
+**Role:** Worker Swarm (Digital Phantom)  
+**Responsibilities:**
+- 5/5 "Digital Phantom" stealth browser instances
+- Behavioral jitter and diffusion-based mouse paths
+- CreepJS validation (target: 100% Human trust score)
+- Stealth browser mission execution
+
+**Critical Rules:**
+- ✅ **Stealth First:** All browser actions must use diffusion-based mouse paths
+- ✅ **Behavioral Jitter:** Implement human-like timing variations
+- ✅ **100% Human Score:** Target 100% Human trust score on CreepJS
+- ✅ **Worker Swarm:** 5 parallel instances for high throughput
+
+---
+
+## 🔗 UNIFIED HANDSHAKE PROTOCOL
+
+### gRPC Communication
+**Contract:** `@proto/chimera.proto` (shared across all services)  
+**Network:** Railway's private network  
+**Protocol:** gRPC over secure channels
+
+**Critical Rules:**
+- ✅ **Contract-First:** All cross-language communication must follow `@proto/chimera.proto`
+- ✅ **No Direct Imports:** Services communicate via gRPC, not code imports
+- ✅ **Type Safety:** Use generated code from proto files
+- ✅ **Private Network:** Use Railway's private network for service-to-service communication
+
+---
+
+## 🎯 MISSION ALPHA OBJECTIVES
+
+### Objective 1: Absolute Isolation
+**Goal:** Physically separate Node.js, Python, and Rust into their own folders to prevent:
+- IDE freezing
+- Build collisions
+- Dependency bloat
+- Cross-language contamination
+
+**Success Criteria:**
+- ✅ Each service in its own directory (`/brainscraper`, `/chimera-brain`, `/chimera-core`)
+- ✅ No shared dependencies between services
+- ✅ Independent build processes
+- ✅ Isolated runtime environments
+
+---
+
+### Objective 2: Stealth Validation
+**Goal:** Rust worker swarm verifies 100% Human trust score on CreepJS
+
+**Requirements:**
+- Behavioral jitter (human-like timing)
+- Diffusion-based mouse paths (mathematically natural movement)
+- Browser fingerprint randomization
+- Canvas/WebGL fingerprint masking
+
+**Success Criteria:**
+- ✅ CreepJS trust score = 100% Human
+- ✅ All 5 worker instances pass validation
+- ✅ Consistent performance across multiple runs
+
+---
+
+### Objective 3: Unified Handshake
+**Goal:** Establish secure gRPC connection over Railway's private network
+
+**Requirements:**
+- Shared `@proto/chimera.proto` contract
+- gRPC server/client in each service
+- Type-safe communication
+- Error handling and retry logic
+
+**Success Criteria:**
+- ✅ The General can communicate with The Brain via gRPC
+- ✅ The Brain can communicate with The Body via gRPC
+- ✅ All services use the same proto contract
+- ✅ Communication works over Railway's private network
+
+---
+
+## 🚨 CRITICAL PROTOCOLS
+
+### Zero Regression Protocol
+**Rule:** Never modify existing functionality unless explicitly requested
+
+**Application:**
+- `/brainscraper` routes must remain unchanged
+- Existing enrichment pipeline must continue working
+- Data protection rules still apply (see `data-protection.mdc`)
+- Redis bridge integration must remain functional
+
+---
+
+### Stealth First Protocol
+**Rule:** All browser automation must prioritize stealth over speed
+
+**Application:**
+- Use diffusion-based mouse paths (not linear)
+- Implement behavioral jitter (random delays)
+- Rotate user agents and fingerprints
+- Respect rate limits and cooldowns
+
+---
+
+### Contract-First Protocol
+**Rule:** All cross-service communication must use gRPC with shared proto contract
+
+**Application:**
+- Define interfaces in `@proto/chimera.proto`
+- Generate client/server code from proto
+- No direct HTTP calls between services
+- Use Railway's private network for security
+
+---
+
+## 📁 PROJECT STRUCTURE
+
+```
+my-lead-engine/
+├── brainscraper/          # The General (Node.js/Next.js)
+│   ├── app/
+│   │   ├── api/           # 50+ API routes (DO NOT MODIFY)
+│   │   └── components/    # UI components
+│   └── utils/            # Node.js utilities
+│
+├── chimera-brain/         # The Brain (Python 3.11)
+│   ├── src/              # Python source code
+│   │   ├── vlm/          # Vision Language Models
+│   │   ├── world_model/  # World modeling
+│   │   └── hive_mind/    # Vector memory
+│   └── requirements.txt  # Python dependencies
+│
+├── chimera-core/          # The Body (Rust)
+│   ├── src/              # Rust source code
+│   │   ├── workers/     # 5/5 Digital Phantom instances
+│   │   ├── stealth/      # Stealth browser logic
+│   │   └── validation/   # CreepJS validation
+│   └── Cargo.toml        # Rust dependencies
+│
+├── scrapegoat/            # Existing Python service (preserve)
+│   └── app/              # FastAPI enrichment pipeline
+│
+└── @proto/                # Shared gRPC contracts
+    └── chimera.proto      # Unified service contract
+```
+
+---
+
+## ✅ SUCCESS CHECKLIST
+
+Before considering Mission Alpha complete, verify:
+
+- [ ] All three services are in isolated directories
+- [ ] No cross-language dependencies
+- [ ] gRPC proto contract defined and shared
+- [ ] Rust workers achieve 100% Human CreepJS score
+- [ ] The General can communicate with The Brain via gRPC
+- [ ] The Brain can communicate with The Body via gRPC
+- [ ] All existing `/brainscraper` routes remain functional
+- [ ] Enrichment pipeline continues working
+- [ ] Data protection rules are maintained
+- [ ] Redis bridge integration is preserved
+
+---
+
+## 🎯 REMEMBER
+
+**This is a distributed system:** Services communicate via gRPC, not code imports.  
+**Isolation is critical:** Each service must be independently deployable.  
+**Stealth is non-negotiable:** Browser automation must be undetectable.  
+**Zero regression:** Existing functionality must be preserved.

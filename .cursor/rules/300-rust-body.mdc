@@ -1,0 +1,400 @@
+---
+description: "The Body (Rust) - Digital Phantom Stealth Worker Swarm"
+alwaysApply: false
+globs:
+  - "chimera-core/**"
+  - "**/chimera-core/**"
+---
+
+# THE BODY: RUST STEALTH WORKER SWARM
+
+## 💪 SERVICE OVERVIEW
+
+**Location:** `/chimera-core`  
+**Technology:** Rust  
+**Role:** Worker Swarm - 5/5 "Digital Phantom" stealth browser instances
+
+---
+
+## 🎯 CORE RESPONSIBILITIES
+
+### 1. Stealth Browser Automation
+- Execute browser missions with human-like behavior
+- Diffusion-based mouse paths (mathematically natural)
+- Behavioral jitter (random timing variations)
+- Browser fingerprint randomization
+
+### 2. CreepJS Validation
+- Achieve 100% Human trust score on CreepJS
+- Pass all fingerprinting tests
+- Maintain consistent stealth across all 5 workers
+
+### 3. Mission Execution
+- Process leads from Redis queue (via The Brain)
+- Navigate target websites
+- Extract data using stealth techniques
+- Report results back via gRPC
+
+---
+
+## 🎯 MISSION ALPHA: STEALTH VALIDATION
+
+### Target: 100% Human Trust Score
+**Tool:** CreepJS (https://abrahamjuliot.github.io/creepjs/)  
+**Requirement:** All 5 workers must achieve 100% Human score
+
+**Validation Checklist:**
+- ✅ Canvas fingerprint: Randomized
+- ✅ WebGL fingerprint: Masked
+- ✅ Audio fingerprint: Varied
+- ✅ Font fingerprint: Randomized
+- ✅ Screen resolution: Varied
+- ✅ Timezone: Randomized
+- ✅ Language: Varied
+- ✅ Mouse movement: Diffusion-based paths
+- ✅ Keyboard timing: Behavioral jitter
+
+---
+
+## 🔧 TECHNICAL REQUIREMENTS
+
+### Rust Version
+**Recommended:** Rust 1.70+ (stable)  
+**Check:** `rustc --version`
+
+### Key Dependencies
+```toml
+[dependencies]
+# Browser automation
+fantoccini = "0.19"          # WebDriver client
+tokio = { version = "1.0", features = ["full"] }  # Async runtime
+
+# Stealth
+rand = "0.8"                 # Randomization
+noise = "0.8"                # Diffusion-based paths
+
+# gRPC
+tonic = "0.10"               # gRPC framework
+prost = "0.12"               # Protocol buffers
+
+# Redis
+redis = { version = "0.24", features = ["tokio-comp"] }
+```
+
+### Project Structure
+```
+chimera-core/
+├── src/
+│   ├── main.rs              # Entry point
+│   │
+│   ├── workers/
+│   │   ├── mod.rs
+│   │   ├── phantom.rs       # Digital Phantom worker
+│   │   └── swarm.rs         # 5/5 worker management
+│   │
+│   ├── stealth/
+│   │   ├── mod.rs
+│   │   ├── mouse.rs         # Diffusion-based mouse paths
+│   │   ├── fingerprint.rs   # Browser fingerprint masking
+│   │   └── jitter.rs        # Behavioral timing jitter
+│   │
+│   ├── validation/
+│   │   ├── mod.rs
+│   │   └── creepjs.rs       # CreepJS validation
+│   │
+│   └── grpc/
+│       ├── mod.rs
+│       ├── client.rs        # gRPC client (to The Brain)
+│       └── server.rs        # gRPC server (from The Brain)
+│
+├── proto/                    # Generated from @proto/chimera.proto
+│   └── chimera.rs
+│
+├── Cargo.toml
+└── README.md
+```
+
+---
+
+## 🥷 STEALTH IMPLEMENTATION
+
+### Diffusion-Based Mouse Paths
+**Principle:** Mouse movement should follow a diffusion process, not linear interpolation
+
+**Implementation:**
+```rust
+// src/stealth/mouse.rs
+use noise::{NoiseFn, Perlin};
+use rand::Rng;
+
+pub struct MousePath {
+    perlin: Perlin,
+    start: (f64, f64),
+    end: (f64, f64),
+}
+
+impl MousePath {
+    pub fn new(start: (f64, f64), end: (f64, f64)) -> Self {
+        Self {
+            perlin: Perlin::new(12345),  // Seed for consistency
+            start,
+            end,
+        }
+    }
+    
+    pub fn generate_path(&self, steps: usize) -> Vec<(f64, f64)> {
+        let mut path = Vec::new();
+        let mut rng = rand::thread_rng();
+        
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            
+            // Linear interpolation
+            let x = self.start.0 + (self.end.0 - self.start.0) * t;
+            let y = self.start.1 + (self.end.1 - self.start.1) * t;
+            
+            // Add Perlin noise for natural variation
+            let noise_x = self.perlin.get([t * 10.0, 0.0]) * 5.0;
+            let noise_y = self.perlin.get([t * 10.0, 1.0]) * 5.0;
+            
+            // Add random jitter
+            let jitter_x = rng.gen_range(-2.0..2.0);
+            let jitter_y = rng.gen_range(-2.0..2.0);
+            
+            path.push((
+                x + noise_x + jitter_x,
+                y + noise_y + jitter_y
+            ));
+        }
+        
+        path
+    }
+}
+```
+
+### Behavioral Jitter
+**Principle:** Human actions have natural timing variations
+
+**Implementation:**
+```rust
+// src/stealth/jitter.rs
+use rand::Rng;
+use std::time::Duration;
+
+pub struct BehavioralJitter {
+    rng: rand::rngs::ThreadRng,
+}
+
+impl BehavioralJitter {
+    pub fn new() -> Self {
+        Self {
+            rng: rand::thread_rng(),
+        }
+    }
+    
+    pub fn human_delay(&mut self, base_ms: u64) -> Duration {
+        // Add ±20% random variation
+        let variation = (base_ms as f64 * 0.2) as u64;
+        let delay_ms = base_ms + self.rng.gen_range(0..=variation * 2) - variation;
+        Duration::from_millis(delay_ms)
+    }
+    
+    pub fn click_timing(&mut self) -> Duration {
+        // Human click timing: 100-300ms
+        self.human_delay(200)
+    }
+    
+    pub fn scroll_timing(&mut self) -> Duration {
+        // Human scroll timing: 50-150ms
+        self.human_delay(100)
+    }
+}
+```
+
+### Browser Fingerprint Masking
+**Principle:** Randomize all detectable browser characteristics
+
+**Implementation:**
+```rust
+// src/stealth/fingerprint.rs
+use rand::Rng;
+
+pub struct FingerprintMask {
+    canvas_seed: u64,
+    webgl_seed: u64,
+    audio_seed: u64,
+}
+
+impl FingerprintMask {
+    pub fn new() -> Self {
+        let mut rng = rand::thread_rng();
+        Self {
+            canvas_seed: rng.gen(),
+            webgl_seed: rng.gen(),
+            audio_seed: rng.gen(),
+        }
+    }
+    
+    pub fn inject_scripts(&self) -> String {
+        format!(r#"
+            // Canvas fingerprint randomization
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function() {{
+                const context = this.getContext('2d');
+                const imageData = context.getImageData(0, 0, this.width, this.height);
+                // Add noise based on seed: {}
+                // ... randomization logic
+                return originalToDataURL.apply(this, arguments);
+            }};
+            
+            // WebGL fingerprint masking
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {{
+                // Mask based on seed: {}
+                // ... masking logic
+                return getParameter.apply(this, arguments);
+            }};
+        "#, self.canvas_seed, self.webgl_seed)
+    }
+}
+```
+
+---
+
+## ✅ CREEPJS VALIDATION
+
+### Validation Flow
+```rust
+// src/validation/creepjs.rs
+use fantoccini::{Client, Locator};
+
+pub async fn validate_stealth(client: &Client) -> Result<f64, String> {
+    // Navigate to CreepJS
+    client.goto("https://abrahamjuliot.github.io/creepjs/").await?;
+    
+    // Wait for page to load
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    
+    // Extract trust score
+    let trust_element = client.find(Locator::Css("#trust-score")).await?;
+    let trust_text = trust_element.text().await?;
+    
+    // Parse score (e.g., "100% Human")
+    let score = parse_trust_score(&trust_text)?;
+    
+    Ok(score)
+}
+
+fn parse_trust_score(text: &str) -> Result<f64, String> {
+    // Extract percentage from "100% Human"
+    // Return as float (100.0)
+}
+```
+
+### Success Criteria
+- ✅ Trust score = 100.0 (100% Human)
+- ✅ All fingerprint tests pass
+- ✅ Consistent across all 5 workers
+- ✅ Maintains score across multiple runs
+
+---
+
+## 🔗 gRPC INTEGRATION
+
+### Proto Contract
+**Source:** `@proto/chimera.proto` (shared across all services)
+
+**Generate Rust Code:**
+```bash
+# In build.rs or via cargo build script
+cargo install prost-build
+```
+
+**Cargo.toml:**
+```toml
+[build-dependencies]
+prost-build = "0.12"
+
+[build]
+build = "build.rs"
+```
+
+**build.rs:**
+```rust
+fn main() {
+    prost_build::compile_protos(
+        &["../@proto/chimera.proto"],
+        &["../@proto"]
+    ).unwrap();
+}
+```
+
+### gRPC Client (to The Brain)
+```rust
+// src/grpc/client.rs
+use tonic::Request;
+use proto::chimera::{brain_client::BrainClient, ProcessVisionRequest};
+
+pub async fn send_vision_to_brain(
+    screenshot: Vec<u8>
+) -> Result<proto::chimera::VisionResponse, tonic::Status> {
+    let mut client = BrainClient::connect("http://chimera-brain:50051").await?;
+    
+    let request = Request::new(ProcessVisionRequest {
+        screenshot,
+    });
+    
+    let response = client.process_vision(request).await?;
+    Ok(response.into_inner())
+}
+```
+
+---
+
+## 🚨 CRITICAL RULES
+
+### 1. Stealth First
+- ✅ **All browser actions must use diffusion-based mouse paths**
+- ✅ **Implement behavioral jitter for all timing**
+- ✅ **Randomize browser fingerprints**
+- ✅ **Target 100% Human CreepJS score**
+
+### 2. Worker Swarm
+- ✅ **5 parallel worker instances** for high throughput
+- ✅ **Each worker is independent** (no shared state)
+- ✅ **Load balancing** across workers
+
+### 3. Service Boundaries
+- ✅ **Communicate with The Brain via gRPC** (not direct imports)
+- ✅ **Use Railway's private network** for service-to-service calls
+- ❌ **No Node.js or Python dependencies** in Rust code
+- ✅ **Keep Rust silo pure**
+
+### 4. Error Handling
+- ✅ **Graceful degradation** if stealth fails
+- ✅ **Retry logic** with exponential backoff
+- ✅ **Log all stealth violations** for analysis
+
+---
+
+## ✅ SUCCESS CRITERIA
+
+A properly implemented Body service:
+
+- ✅ All 5 workers achieve 100% Human CreepJS score
+- ✅ Diffusion-based mouse paths implemented
+- ✅ Behavioral jitter applied to all actions
+- ✅ Browser fingerprints randomized
+- ✅ Can communicate with The Brain via gRPC
+- ✅ Processes leads from Redis queue (via The Brain)
+- ✅ No Node.js or Python dependencies
+- ✅ Service is independently deployable on Railway
+
+---
+
+## 🎯 REMEMBER
+
+**Stealth is non-negotiable:** Browser automation must be undetectable.  
+**100% Human score is the target:** CreepJS validation is critical.  
+**Diffusion-based paths:** Not linear interpolation.  
+**Behavioral jitter:** All timing must vary naturally.

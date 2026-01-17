@@ -1,0 +1,103 @@
+# Cursor Ignore File
+# Prevents AI from indexing unnecessary files to reduce context bloat
+
+# Node.js dependencies (15,000+ files)
+node_modules/
+**/node_modules/
+
+# Python virtual environments and cache
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Rust build artifacts
+target/
+**/target/
+Cargo.lock
+
+# Build outputs and artifacts
+dist/
+build/
+.next/
+out/
+**/dist/
+**/build/
+**/.next/
+**/out/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+logs/
+**/logs/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets/
+
+# Generated files
+*.generated.*
+**/generated/
+proto/**/*_pb2.py
+proto/**/*_pb2_grpc.py
+proto/**/*.rs
+**/proto/**/*_pb2.py
+**/proto/**/*_pb2_grpc.py
+**/proto/**/*.rs
+
+# Data files (large JSON/CSV)
+data/*.json
+data/*.csv
+**/data/*.json
+**/data/*.csv
+enriched-all-leads.json
+
+# Coverage and test artifacts
+coverage/
+.nyc_output/
+*.lcov
+.pytest_cache/
+.coverage
+
+# Railway and deployment
+.railway/
+railway.toml.local
+
+# Documentation builds
+docs/_build/
+site/
+
+# Large binary files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.svg
+*.woff
+*.woff2
+*.ttf
+*.eot
+
+# Keep specific important images (logo, etc.)
+!public/logo.png
+!brainscraper/public/logo.png

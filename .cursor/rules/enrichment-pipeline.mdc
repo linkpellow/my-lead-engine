@@ -1,0 +1,463 @@
+---
+description: "Enrichment Pipeline Patterns - Scrapegoat Worker Processing Flow"
+alwaysApply: false
+globs:
+  - "scrapegoat/app/workers/**"
+  - "scrapegoat/app/smartfields/**"
+  - "scrapegoat/app/scraping/**"
+---
+
+# Enrichment Pipeline Patterns
+
+## 🎯 Pipeline Overview
+
+The Scrapegoat enrichment pipeline transforms raw LinkedIn/Facebook leads into fully enriched, DNC-verified, demographic-rich records ready for sales outreach.
+
+---
+
+## 📋 PROCESSING STEPS (In Order)
+
+### Step 1: Identity Resolution
+**Purpose:** Resolve raw LinkedIn data into verifiable US identity
+
+**Input:**
+```python
+{
+  "linkedinUrl": "https://linkedin.com/in/johndoe",
+  "name": "John Doe",
+  "location": "Naples, Florida, United States",
+  "title": "Software Engineer",
+  "company": "Acme Corp"
+}
+```
+
+**Process:**
+- Parse LinkedIn URL to extract profile identifier
+- Validate name format (first + last)
+- Normalize location (city, state, zip)
+- Extract company information
+
+**Output:**
+```python
+{
+  "firstName": "John",
+  "lastName": "Doe",
+  "city": "Naples",
+  "state": "FL",
+  "zipcode": "34101",
+  "company": "Acme Corp"
+}
+```
+
+---
+
+### Step 2: Skip-Tracing
+**Purpose:** Find valid phone numbers and emails
+
+**APIs Used:**
+- `skip-tracing-working-api.p.rapidapi.com/search/byemail`
+- `skip-tracing-working-api.p.rapidapi.com/search/bynameaddress`
+- `skip-tracing-api.p.rapidapi.com/by-name-and-address`
+
+**Process:**
+```python
+def skip_trace(identity: dict) -> dict:
+    """Find contact information via skip-tracing APIs"""
+    
+    # Try by email first (if available)
+    if identity.get('email'):
+        result = call_skip_trace_api('byemail', {
+            'email': identity['email'],
+            'phone': '1'  # Request phone
+        })
+        if result.get('phone'):
+            return {
+                'phone': result['phone'],
+                'email': identity['email']
+            }
+    
+    # Try by name and address
+    result = call_skip_trace_api('bynameaddress', {
+        'name': f"{identity['firstName']} {identity['lastName']}",
+        'citystatezip': f"{identity['city']}, {identity['state']} {identity['zipcode']}"
+    })
+    
+    return {
+        'phone': result.get('phone'),
+        'email': result.get('email')
+    }
+```
+
+**Output:**
+```python
+{
+  "phone": "+12123456789",
+  "email": "john.doe@example.com"
+}
+```
+
+**Failure Handling:**
+- If no phone found → Return `False` (lead cannot proceed)
+- If no email found → Continue (phone is required, email optional)
+
+---
+
+### Step 3: Telnyx Gatekeep ⚠️ COST SAVER
+**Purpose:** Validate phone number and filter out VOIP/Landline/junk carriers
+
+**Why Critical:** Stops enrichment early to save API costs on invalid numbers
+
+**Process:**
+```python
+def validate_phone_telnyx(phone: str) -> dict:
+    """Validate phone via Telnyx API"""
+    
+    # Call Telnyx Phone Number Lookup API
+    response = requests.get(
+        'https://api.telnyx.com/v2/phone_numbers/lookup',
+        params={'phone_number': phone},
+        headers={'Authorization': f'Bearer {TELNYX_API_KEY}'}
+    )
+    
+    data = response.json()
+    
+    return {
+        'is_valid': data.get('valid', False),
+        'is_mobile': data.get('carrier', {}).get('type') == 'mobile',
+        'is_voip': data.get('carrier', {}).get('type') == 'voip',
+        'is_landline': data.get('carrier', {}).get('type') == 'landline',
+        'carrier': data.get('carrier', {}).get('name'),
+        'is_junk': is_junk_carrier(data.get('carrier', {}).get('name'))
+    }
+
+def is_junk_carrier(carrier_name: str) -> bool:
+    """Check if carrier is known junk/VOIP provider"""
+    junk_carriers = [
+        'Google Voice',
+        'TextNow',
+        'Burner',
+        'Twilio',
+        'Bandwidth',
+        # Add more as discovered
+    ]
+    return carrier_name in junk_carriers
+```
+
+**Gatekeep Logic:**
+```python
+validation = validate_phone_telnyx(phone)
+
+# STOP HERE if invalid
+if not validation['is_valid']:
+    return False  # Lead rejected
+
+# STOP HERE if VOIP/Landline
+if validation['is_voip'] or validation['is_landline']:
+    return False  # Lead rejected (save costs)
+
+# STOP HERE if junk carrier
+if validation['is_junk']:
+    return False  # Lead rejected
+
+# Only mobile numbers proceed
+if not validation['is_mobile']:
+    return False  # Lead rejected
+```
+
+**Output:**
+- If passes: Continue to Step 4
+- If fails: **STOP** (lead rejected, no further API calls)
+
+---
+
+### Step 4: USHA DNC Scrub
+**Purpose:** Check phone number against Do-Not-Call registry
+
+**API:**
+- `https://api-business-agent.ushadvisors.com/Leads/api/leads/scrubphonenumber`
+- Requires: `USHA_JWT_TOKEN` or `COGNITO_REFRESH_TOKEN`
+
+**Process:**
+```python
+def scrub_dnc(phone: str, agent_number: str = "00044447") -> dict:
+    """Check phone against USHA DNC registry"""
+    
+    # Get USHA token (auto-refresh if needed)
+    token = get_usha_token()
+    
+    # Clean phone number
+    cleaned_phone = re.sub(r'\D', '', phone)
+    
+    # Call USHA API
+    response = requests.get(
+        'https://api-business-agent.ushadvisors.com/Leads/api/leads/scrubphonenumber',
+        params={
+            'phone': cleaned_phone,
+            'currentContextAgentNumber': agent_number
+        },
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Origin': 'https://agent.ushadvisors.com',
+            'Referer': 'https://agent.ushadvisors.com'
+        }
+    )
+    
+    data = response.json()
+    
+    # Parse response
+    is_dnc = (
+        data.get('isDoNotCall') == True or
+        data.get('contactStatus', {}).get('canContact') == False
+    )
+    
+    return {
+        'status': 'YES' if is_dnc else 'NO',
+        'can_contact': not is_dnc,
+        'reason': data.get('reason') or data.get('contactStatus', {}).get('reason')
+    }
+```
+
+**Output:**
+```python
+{
+  "dnc_status": "NO",  # or "YES" if on DNC list
+  "can_contact": True,  # or False if on DNC list
+  "reason": None  # or reason if on DNC list
+}
+```
+
+**Failure Handling:**
+- If on DNC list → **STOP** (lead rejected)
+- If API error → Retry (up to 3 times), then move to DLQ
+
+---
+
+### Step 5: Demographic Enrichment
+**Purpose:** Pull high-accuracy US census data (Income, Age, Address)
+
+**APIs Used:**
+- Census API: `https://api.census.gov/data/...`
+- RapidAPI: `household-income-by-zip-code.p.rapidapi.com`
+- Uses: `CENSUS_API_KEY`
+
+**Process:**
+```python
+def enrich_demographics(contact_info: dict) -> dict:
+    """Enrich with demographic data from Census API"""
+    
+    zipcode = contact_info.get('zipcode')
+    if not zipcode:
+        return {}  # Can't enrich without zipcode
+    
+    # Get income data
+    income_data = get_income_by_zipcode(zipcode)
+    
+    # Get age data (if available from skip-trace)
+    age = contact_info.get('age') or estimate_age(contact_info)
+    
+    # Get address details
+    address = get_address_details(contact_info)
+    
+    return {
+        'income': income_data.get('median_income'),
+        'age': age,
+        'address': address.get('full_address'),
+        'city': address.get('city'),
+        'state': address.get('state'),
+        'zipcode': zipcode
+    }
+
+def get_income_by_zipcode(zipcode: str) -> dict:
+    """Get median household income for zipcode"""
+    response = requests.get(
+        f'https://household-income-by-zip-code.p.rapidapi.com/v1/Census/HouseholdIncomeByZip/{zipcode}',
+        headers={
+            'x-rapidapi-key': RAPIDAPI_KEY,
+            'x-rapidapi-host': 'household-income-by-zip-code.p.rapidapi.com'
+        }
+    )
+    return response.json()
+```
+
+**Output:**
+```python
+{
+  "income": "$75,000",
+  "age": 45,
+  "address": "123 Main St",
+  "city": "Naples",
+  "state": "FL",
+  "zipcode": "34101"
+}
+```
+
+---
+
+### Step 6: The Trauma Center (Self-Healing)
+**Purpose:** If public record sites change UI, Vision LLMs autonomously re-map selectors
+
+**When Triggered:**
+- Selector not found (404, element missing)
+- Unexpected page structure
+- CAPTCHA or bot detection
+
+**Process:**
+```python
+def self_heal_selector(page, original_selector: str) -> str:
+    """Use Vision LLM to find new selector when page structure changes"""
+    
+    # Take screenshot
+    screenshot = page.screenshot()
+    
+    # Send to OpenAI Vision API
+    response = openai.ChatCompletion.create(
+        model="gpt-4-vision-preview",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"Find the selector for: {original_selector}. The page structure changed."},
+                {"type": "image_url", "image_url": screenshot}
+            ]
+        }]
+    )
+    
+    # Extract new selector from response
+    new_selector = parse_selector_from_response(response)
+    
+    # Update selector mapping
+    update_selector_cache(original_selector, new_selector)
+    
+    return new_selector
+```
+
+**Usage:**
+```python
+try:
+    element = page.query_selector(selector)
+except SelectorNotFound:
+    # Self-heal
+    new_selector = self_heal_selector(page, selector)
+    element = page.query_selector(new_selector)
+```
+
+---
+
+### Step 7: Save to PostgreSQL
+**Purpose:** Write final enriched record to permanent storage
+
+**Process:**
+```python
+def save_to_database(enriched_lead: dict):
+    """Save enriched lead to PostgreSQL"""
+    
+    conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+    cur = conn.cursor()
+    
+    # Deduplication: Use LinkedIn URL as unique key
+    cur.execute("""
+        INSERT INTO leads (
+            linkedin_url, name, phone, email,
+            city, state, zipcode, age, income,
+            dnc_status, can_contact, enriched_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (linkedin_url) 
+        DO UPDATE SET
+            phone = COALESCE(leads.phone, EXCLUDED.phone),
+            email = COALESCE(leads.email, EXCLUDED.email),
+            age = COALESCE(leads.age, EXCLUDED.age),
+            income = COALESCE(leads.income, EXCLUDED.income),
+            dnc_status = COALESCE(leads.dnc_status, EXCLUDED.dnc_status),
+            can_contact = COALESCE(leads.can_contact, EXCLUDED.can_contact),
+            enriched_at = NOW()
+    """, (
+        enriched_lead['linkedinUrl'],
+        enriched_lead['name'],
+        enriched_lead.get('phone'),
+        enriched_lead.get('email'),
+        enriched_lead.get('city'),
+        enriched_lead.get('state'),
+        enriched_lead.get('zipcode'),
+        enriched_lead.get('age'),
+        enriched_lead.get('income'),
+        enriched_lead.get('dnc_status'),
+        enriched_lead.get('can_contact')
+    ))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+```
+
+---
+
+## 🔄 COMPLETE PIPELINE FLOW
+
+```python
+def process_lead(lead_data: dict) -> bool:
+    """Complete enrichment pipeline"""
+    
+    try:
+        # Step 1: Identity Resolution
+        identity = resolve_identity(lead_data)
+        
+        # Step 2: Skip-Tracing
+        contact_info = skip_trace(identity)
+        if not contact_info.get('phone'):
+            return False  # No phone found
+        
+        # Step 3: Telnyx Gatekeep (STOP if invalid)
+        validation = validate_phone_telnyx(contact_info['phone'])
+        if not validation['is_mobile'] or validation['is_junk']:
+            return False  # Rejected (save costs)
+        
+        # Step 4: USHA DNC Scrub
+        dnc_result = scrub_dnc(contact_info['phone'])
+        if not dnc_result['can_contact']:
+            return False  # On DNC list
+        
+        # Step 5: Demographic Enrichment
+        demographics = enrich_demographics(contact_info)
+        
+        # Step 6: Self-Healing (if needed during any step)
+        # (Handled automatically in each step)
+        
+        # Step 7: Save to Database
+        enriched_lead = {
+            **lead_data,
+            **contact_info,
+            **demographics,
+            'dnc_status': dnc_result['status'],
+            'can_contact': dnc_result['can_contact']
+        }
+        save_to_database(enriched_lead)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Pipeline error: {e}")
+        return False
+```
+
+---
+
+## ⚠️ CRITICAL RULES
+
+1. **Gatekeep Early:** Stop at Telnyx validation to save costs
+2. **DNC Check Required:** Never skip DNC scrub
+3. **Deduplication:** Always use `ON CONFLICT` in PostgreSQL
+4. **Error Handling:** Each step should handle failures gracefully
+5. **Retry Logic:** Implement retry with exponential backoff
+6. **Self-Healing:** Use Vision LLMs when selectors break
+7. **Cost Optimization:** Stop early if phone is invalid/VOIP/junk
+
+---
+
+## ✅ SUCCESS CRITERIA
+
+A lead is successfully enriched when:
+- ✅ Phone number found and validated (mobile, not VOIP/junk)
+- ✅ DNC status checked (not on Do-Not-Call list)
+- ✅ Demographics enriched (income, age, address)
+- ✅ Saved to PostgreSQL with deduplication
+- ✅ All API calls succeeded (or failed gracefully with retries)

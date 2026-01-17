@@ -1,0 +1,328 @@
+---
+description: "Redis Bridge Integration Patterns - Producer-Consumer Communication"
+alwaysApply: false
+globs:
+  - "brainscraper/**/*redis*.ts"
+  - "brainscraper/**/*queue*.ts"
+  - "scrapegoat/**/*worker*.py"
+  - "scrapegoat/**/*redis*.py"
+---
+
+# Redis Bridge Integration Patterns
+
+## 🎯 Purpose
+
+The Redis Bridge decouples **BrainScraper** (high-speed scraping) from **Scrapegoat** (intensive AI enrichment), enabling independent scaling and fault tolerance.
+
+---
+
+## 📡 QUEUE ARCHITECTURE
+
+```
+BrainScraper (Producer) → Redis Queue → Scrapegoat Worker (Consumer)
+                              ↓
+                        Dead Letter Queue (DLQ)
+```
+
+### Queue Names
+- **Main Queue:** `leads_to_enrich` (FIFO)
+- **Dead Letter Queue:** `failed_leads` (after 3 retries)
+
+---
+
+## 🔵 PRODUCER PATTERN (BrainScraper - TypeScript)
+
+### Setup
+```typescript
+import { createClient } from 'redis';
+
+const redisClient = createClient({
+  url: process.env.REDIS_URL || 'redis://localhost:6379'
+});
+
+await redisClient.connect();
+```
+
+### Push Lead to Queue
+```typescript
+interface LeadQueueItem {
+  linkedinUrl: string;
+  name: string;
+  location?: string;
+  title?: string;
+  company?: string;
+  platform: 'linkedin' | 'facebook';
+  sourceDetails?: Record<string, any>;
+  timestamp: string;
+}
+
+async function pushLeadToQueue(lead: LeadQueueItem): Promise<void> {
+  // 1. Check limits and cooldown BEFORE pushing
+  const limitCheck = await checkScrapeLimit('linkedin', dailyLimit, monthlyLimit);
+  if (!limitCheck.allowed) {
+    throw new Error(`Scrape limit reached: ${limitCheck.limitType}`);
+  }
+  
+  const inCooldown = await isInCooldown();
+  if (inCooldown) {
+    const remaining = await getCooldownRemaining();
+    throw new Error(`System in cooldown. Wait ${remaining}ms`);
+  }
+  
+  // 2. Push to Redis queue
+  const queueItem = {
+    ...lead,
+    timestamp: new Date().toISOString()
+  };
+  
+  await redisClient.lPush('leads_to_enrich', JSON.stringify(queueItem));
+  
+  // 3. Track usage
+  await incrementScrapeCount('linkedin', 1);
+  
+  console.log(`✅ Lead queued: ${lead.name} (${lead.linkedinUrl})`);
+}
+```
+
+### Error Handling
+```typescript
+try {
+  await pushLeadToQueue(lead);
+} catch (error) {
+  // Record error for cooldown tracking
+  await recordError();
+  
+  // Log but don't fail the entire scrape
+  console.error('Failed to queue lead:', error);
+}
+```
+
+---
+
+## 🟢 CONSUMER PATTERN (Scrapegoat - Python)
+
+### Setup
+```python
+import redis
+import json
+import os
+import time
+
+redis_client = redis.from_url(os.getenv("REDIS_URL"))
+```
+
+### Worker Loop
+```python
+MAX_RETRIES = 3
+RETRY_DELAY_BASE = 5  # seconds
+
+def process_lead(lead_data: dict) -> bool:
+    """Process a single lead. Returns True if successful."""
+    try:
+        # 1. Identity Resolution
+        identity = resolve_identity(lead_data)
+        
+        # 2. Skip-Tracing
+        contact_info = skip_trace(identity)
+        if not contact_info.get('phone'):
+            return False  # No phone found
+        
+        # 3. Telnyx Gatekeep
+        phone_validation = validate_phone_telnyx(contact_info['phone'])
+        if not phone_validation['is_mobile'] or phone_validation['is_junk']:
+            return False  # Stop here to save costs
+        
+        # 4. USHA DNC Scrub
+        dnc_result = scrub_dnc(contact_info['phone'])
+        if not dnc_result['can_contact']:
+            return False  # On DNC list
+        
+        # 5. Demographic Enrichment
+        demographics = enrich_demographics(contact_info)
+        
+        # 6. Save to PostgreSQL
+        save_to_database({
+            **lead_data,
+            **contact_info,
+            **demographics,
+            'dnc_status': dnc_result['status'],
+            'can_contact': dnc_result['can_contact']
+        })
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error processing lead: {e}")
+        return False
+
+def worker_loop():
+    """Main worker loop - runs continuously"""
+    retry_count = {}
+    
+    while True:
+        try:
+            # Blocking pop (waits up to 10 seconds)
+            result = redis_client.brpop('leads_to_enrich', timeout=10)
+            
+            if result:
+                queue_name, lead_json = result
+                lead_data = json.loads(lead_json)
+                lead_id = lead_data.get('linkedinUrl', 'unknown')
+                
+                # Process lead
+                success = process_lead(lead_data)
+                
+                if success:
+                    print(f"✅ Enriched: {lead_data.get('name')}")
+                    retry_count.pop(lead_id, None)  # Clear retry count
+                else:
+                    # Increment retry count
+                    retry_count[lead_id] = retry_count.get(lead_id, 0) + 1
+                    
+                    if retry_count[lead_id] >= MAX_RETRIES:
+                        # Move to DLQ
+                        redis_client.lpush('failed_leads', lead_json)
+                        print(f"❌ Failed after {MAX_RETRIES} retries: {lead_id}")
+                        retry_count.pop(lead_id)
+                    else:
+                        # Retry with exponential backoff
+                        delay = RETRY_DELAY_BASE * (2 ** (retry_count[lead_id] - 1))
+                        time.sleep(delay)
+                        redis_client.lpush('leads_to_enrich', lead_json)  # Re-queue
+                        print(f"🔄 Retry {retry_count[lead_id]}/{MAX_RETRIES}: {lead_id}")
+            
+        except redis.ConnectionError:
+            print("Redis connection lost. Reconnecting...")
+            time.sleep(5)
+            redis_client = redis.from_url(os.getenv("REDIS_URL"))
+        except Exception as e:
+            print(f"Worker error: {e}")
+            time.sleep(1)
+
+if __name__ == "__main__":
+    worker_loop()
+```
+
+---
+
+## 🔴 DEAD LETTER QUEUE (DLQ) MANAGEMENT
+
+### Move to DLQ
+```python
+# After MAX_RETRIES failures
+redis_client.lpush('failed_leads', lead_json)
+```
+
+### Inspect DLQ
+```python
+# Get failed leads
+failed_items = redis_client.lrange('failed_leads', 0, 49)  # Last 50
+for item in failed_items:
+    lead = json.loads(item)
+    print(f"Failed: {lead.get('name')} - {lead.get('linkedinUrl')}")
+```
+
+### Retry from DLQ
+```python
+# Retry specific item
+failed_items = redis_client.lrange('failed_leads', 0, -1)
+item_index = 0  # Index of item to retry
+item = failed_items[item_index]
+
+# Remove from DLQ
+redis_client.lrem('failed_leads', 1, item)
+
+# Re-queue for processing
+redis_client.lpush('leads_to_enrich', item)
+```
+
+### DLQ API Endpoints (Scrapegoat FastAPI)
+```python
+@app.get("/dlq/items")
+async def get_dlq_items(limit: int = 50):
+    items = redis_client.lrange('failed_leads', 0, limit - 1)
+    return {
+        "count": len(items),
+        "items": [json.loads(item) for item in items]
+    }
+
+@app.post("/dlq/retry/{item_index}")
+async def retry_dlq_item(item_index: int):
+    items = redis_client.lrange('failed_leads', 0, -1)
+    if item_index >= len(items):
+        raise HTTPException(404, "Item not found")
+    
+    item = items[item_index]
+    redis_client.lrem('failed_leads', 1, item)
+    redis_client.lpush('leads_to_enrich', item)
+    return {"status": "requeued"}
+```
+
+---
+
+## 📊 MONITORING & STATUS
+
+### Check Queue Status
+```typescript
+// BrainScraper
+const queueLength = await redisClient.lLen('leads_to_enrich');
+const dlqLength = await redisClient.lLen('failed_leads');
+
+console.log(`Queue: ${queueLength} leads pending`);
+console.log(`DLQ: ${dlqLength} leads failed`);
+```
+
+### Health Check
+```python
+# Scrapegoat
+@app.get("/queue/status")
+async def queue_status():
+    leads_queue_length = redis_client.llen("leads_to_enrich")
+    failed_queue_length = redis_client.llen("failed_leads")
+    
+    return {
+        "leads_to_enrich": leads_queue_length,
+        "failed_leads": failed_queue_length,
+        "status": "active"
+    }
+```
+
+---
+
+## ⚠️ CRITICAL RULES
+
+1. **Always JSON.stringify/parse** - Queue items must be JSON strings
+2. **Check limits before pushing** - Use `checkScrapeLimit()` and `isInCooldown()`
+3. **Track usage after success** - Call `incrementScrapeCount()` after successful push
+4. **Record errors for cooldown** - Call `recordError()` on failures
+5. **Use blocking pop (BRPOP)** - Workers should block, not poll
+6. **Implement retry logic** - Exponential backoff, max 3 retries
+7. **Move to DLQ after max retries** - Don't lose failed leads
+8. **Handle connection errors** - Reconnect on Redis failures
+
+---
+
+## 🔧 ENVIRONMENT VARIABLES
+
+Both services need:
+```bash
+REDIS_URL=${{redis-bridge.REDIS_URL}}  # Railway shared variable
+```
+
+Local development:
+```bash
+REDIS_URL=redis://localhost:6379
+```
+
+---
+
+## ✅ SUCCESS CHECKLIST
+
+- ✅ Producer checks limits/cooldown before pushing
+- ✅ Producer tracks usage after successful push
+- ✅ Producer records errors for cooldown management
+- ✅ Consumer uses blocking pop (BRPOP)
+- ✅ Consumer implements retry with exponential backoff
+- ✅ Consumer moves to DLQ after MAX_RETRIES
+- ✅ DLQ can be inspected and manually retried
+- ✅ Both services handle Redis connection errors gracefully

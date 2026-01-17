@@ -1,0 +1,21 @@
+# Chimera Brain - Python Dependencies
+# The Brain: VLM, Hive Mind, gRPC Server
+
+# gRPC
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+
+# Machine Learning
+torch>=2.0.0
+transformers>=4.36.0
+sentence-transformers>=2.2.0
+
+# Redis (for Hive Mind vector memory)
+redis>=5.0.0
+
+# Image processing
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Utilities
+protobuf>=4.25.0

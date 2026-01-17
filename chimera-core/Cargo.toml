@@ -1,0 +1,40 @@
+[package]
+name = "chimera-core"
+version = "0.1.0"
+edition = "2021"
+description = "The Body - Digital Phantom Stealth Worker Swarm"
+authors = ["Mission Alpha Team"]
+
+[dependencies]
+# gRPC & Protocol Buffers
+tonic = "0.12"
+prost = "0.13"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Random for stealth jitter
+rand = "0.8"
+
+# Noise for diffusion-based paths
+noise = "0.9"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[[bin]]
+name = "chimera-worker"
+path = "src/main.rs"
