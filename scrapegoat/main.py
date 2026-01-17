@@ -2,6 +2,7 @@
 Scrapegoat: AI-Powered Lead Enrichment Worker Swarm
 Consumer service that processes leads from Redis queue
 # Cache invalidation: 2026-01-17 23:15 - Force Railway rebuild for scrapegoat service
+# Force build: 2026-01-17-v1
 """
 
 # Critical: Print immediately to verify script is executing
