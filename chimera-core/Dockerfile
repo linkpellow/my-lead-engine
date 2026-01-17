@@ -1,5 +1,5 @@
 # Chimera Core - Rust Worker Swarm
-FROM rust:1.75-slim as builder
+FROM rust:1.82-slim as builder
 
 WORKDIR /app
 
@@ -9,8 +9,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy manifests
-COPY Cargo.toml Cargo.lock* ./
+COPY Cargo.toml ./
 COPY build.rs ./
+# Cargo.lock is optional - cargo will generate it if missing
+# Using wildcard so it won't fail if file doesn't exist
+COPY Cargo.lock* ./
 
 # Copy proto file from build context (proto file is in chimera-core/ directory)
 # Railway build context is chimera-core/, so proto file must be in this directory
