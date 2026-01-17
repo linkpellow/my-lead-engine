@@ -15,6 +15,7 @@ import asyncio
 from concurrent import futures
 import grpc
 from typing import Optional
+import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
@@ -222,6 +223,11 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
             )
 
 
+class HTTPServerV6(HTTPServer):
+    """HTTPServer with IPv6 support for Railway's dual-stack networking"""
+    address_family = socket.AF_INET6
+
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Simple HTTP handler for Railway healthchecks"""
     
@@ -241,12 +247,13 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 
 def start_health_server(port: int = 8080):
-    """Start HTTP healthcheck server in a separate thread"""
+    """Start HTTP healthcheck server in a separate thread with IPv6 support"""
     def run_server():
-        # Use 0.0.0.0 for dual-stack binding (works with both IPv4 and IPv6)
-        # Python's HTTPServer doesn't support '::' directly
-        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-        logger.info(f"🏥 Health check server started on 0.0.0.0:{port}")
+        # Binding to '::' allows for IPv6
+        # On Railway, this also allows IPv4 via IPv4-mapped IPv6 addresses (dual-stack)
+        server_address = ('::', port)
+        server = HTTPServerV6(server_address, HealthCheckHandler)
+        logger.info(f"🏥 Health check server started on [::]:{port} (IPv6 dual-stack)")
         server.serve_forever()
     
     thread = Thread(target=run_server, daemon=True)
