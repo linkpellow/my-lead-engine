@@ -25,7 +25,7 @@ async function scrubPhoneNumber(
   phone: string,
   token: string,
   agentNumber: string = DEFAULT_AGENT_NUMBER,
-  getFreshToken?: () => Promise<string>
+  getFreshToken?: () => Promise<string | null>
 ): Promise<DNCResult> {
   // Clean phone number - remove all non-digits
   const cleanedPhone = phone.replace(/\D/g, '');
