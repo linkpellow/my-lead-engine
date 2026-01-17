@@ -3,7 +3,9 @@ builder = "NIXPACKS"
 buildCommand = "pip install -r requirements.txt && playwright install chromium"
 
 [deploy]
-startCommand = "python3 main.py"
+# startCommand removed - set per-service in Railway Dashboard:
+# - scrapegoat (main): python3 main.py
+# - scrapegoat-worker-swarm: python start_redis_worker.py
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
