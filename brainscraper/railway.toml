@@ -1,5 +1,7 @@
 [build]
-builder = "DOCKERFILE"
+# Switched to NIXPACKS - Dockerfile has build context issues with Root Directory
+# Nixpacks handles monorepo Root Directory better than Dockerfile
+builder = "NIXPACKS"
 watchPatterns = [
   "brainscraper/**"
 ]
