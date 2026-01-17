@@ -209,7 +209,8 @@ export async function POST(request: NextRequest) {
           if (!regex) continue; // Skip if regex is undefined
           const match = html.match(regex);
           if (match) {
-            const value = pattern.group !== undefined ? match[pattern.group] : match[0];
+            const group = 'group' in pattern ? pattern.group : undefined;
+            const value = group !== undefined ? match[group] : match[0];
             if (value && isValidValue(fieldName, value)) {
               discoveredSelectors.push({
                 field: fieldName,
