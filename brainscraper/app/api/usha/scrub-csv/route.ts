@@ -192,6 +192,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // At this point, TypeScript knows token is not null, but we need to help it in closures
+    // Create a non-null variable for use in closures
+    let currentToken: string = token;
+
     // Create a function to get fresh token (for retry on 401/403)
     // This will update the token variable for subsequent batches
     const getFreshToken = async (): Promise<string | null> => {
@@ -199,7 +203,7 @@ export async function POST(request: NextRequest) {
       clearTokenCache();
       const freshToken = await getUshaToken(null, true); // Force refresh
       if (freshToken) {
-        token = freshToken; // Update token for subsequent batches
+        currentToken = freshToken; // Update token for subsequent batches
         console.log(`✅ [DNC CSV SCRUB] Token refreshed, using for remaining requests`);
       }
       return freshToken;
@@ -252,7 +256,7 @@ export async function POST(request: NextRequest) {
       // Process batch in parallel
       const batchPromises = batch.map(async ({ row, phone }) => {
         // Use current token, but allow refresh on 401/403
-        const dncResult = await scrubPhoneNumber(phone, token, DEFAULT_AGENT_NUMBER, getFreshToken);
+        const dncResult = await scrubPhoneNumber(phone, currentToken, DEFAULT_AGENT_NUMBER, getFreshToken);
         
         // Add DNC status to row
         (row as any).dncStatus = dncResult.isDoNotCall ? 'DNC' : 'OK';
