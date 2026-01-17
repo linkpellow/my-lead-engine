@@ -20,11 +20,11 @@ except (AttributeError, ValueError):
 print("🔧 [STARTUP] Loading Scrapegoat module...", flush=True)
 
 try:
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import redis
-import json
-from typing import Dict, Any
+    from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+    import redis
+    import json
+    from typing import Dict, Any
     print("✅ [STARTUP] Core imports successful", flush=True)
 except ImportError as e:
     print(f"❌ [STARTUP] Import error: {e}", flush=True)
