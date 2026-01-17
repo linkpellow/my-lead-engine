@@ -206,6 +206,7 @@ export async function POST(request: NextRequest) {
         } else if ('regex' in pattern) {
           // Regex pattern
           const regex = pattern.regex;
+          if (!regex) continue; // Skip if regex is undefined
           const match = html.match(regex);
           if (match) {
             const value = pattern.group !== undefined ? match[pattern.group] : match[0];
