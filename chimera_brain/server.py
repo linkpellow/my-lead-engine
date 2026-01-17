@@ -10,12 +10,12 @@ Listens on port 50051 for Railway deployment.
 """
 
 import os
+import json
 import logging
 import asyncio
 from concurrent import futures
 import grpc
 from typing import Optional
-import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
@@ -366,9 +366,7 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
             )
 
 
-class HTTPServerV6(HTTPServer):
-    """HTTPServer with IPv6 support for Railway's dual-stack networking"""
-    address_family = socket.AF_INET6
+# Removed HTTPServerV6 - using standard HTTPServer with 0.0.0.0 binding
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -390,13 +388,12 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 
 def start_health_server(port: int = 8080):
-    """Start HTTP healthcheck server in a separate thread with IPv6 support"""
+    """Start HTTP healthcheck server in a separate thread, binding to 0.0.0.0 for Railway"""
     def run_server():
-        # Binding to '::' allows for IPv6
-        # On Railway, this also allows IPv4 via IPv4-mapped IPv6 addresses (dual-stack)
-        server_address = ('::', port)
-        server = HTTPServerV6(server_address, HealthCheckHandler)
-        logger.info(f"🏥 Health check server started on [::]:{port} (IPv6 dual-stack)")
+        # Bind to 0.0.0.0 for Railway compatibility (listens on all interfaces)
+        server_address = ('0.0.0.0', port)
+        server = HTTPServer(server_address, HealthCheckHandler)
+        logger.info(f"🏥 Health check server started on 0.0.0.0:{port}")
         server.serve_forever()
     
     thread = Thread(target=run_server, daemon=True)
@@ -436,7 +433,8 @@ def serve(grpc_port: int = 50051, health_port: int = 8080, use_simple_vision: bo
         server
     )
     
-    listen_addr = f"[::]:{grpc_port}"
+    # Bind to 0.0.0.0 for Railway compatibility (listens on all interfaces)
+    listen_addr = f"0.0.0.0:{grpc_port}"
     server.add_insecure_port(listen_addr)
     
     logger.info(f"🧠 Starting The Brain gRPC server on {listen_addr}")
