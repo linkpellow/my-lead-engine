@@ -103,7 +103,7 @@ export function getAllJobStatuses(): JobStatus[] {
       return [];
     }
     
-    const files = fs.readdirSync(jobsDir)
+    const jobs = fs.readdirSync(jobsDir)
       .filter(file => file.endsWith('.json'))
       .map(file => {
         const filePath = path.join(jobsDir, file);
