@@ -3,12 +3,19 @@ Scrapegoat: AI-Powered Lead Enrichment Worker Swarm
 Consumer service that processes leads from Redis queue
 """
 
+# Critical: Print immediately to verify script is executing
+print("🔧 [STARTUP] Script started", flush=True)
+
 import sys
 import os
 
 # Flush output immediately for Railway logs
-sys.stdout.reconfigure(line_buffering=True)
-sys.stderr.reconfigure(line_buffering=True)
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except (AttributeError, ValueError):
+    # Python < 3.7 or reconfigure not available, use flush instead
+    pass
 
 print("🔧 [STARTUP] Loading Scrapegoat module...", flush=True)
 
