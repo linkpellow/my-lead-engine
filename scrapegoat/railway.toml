@@ -2,9 +2,11 @@
 builder = "NIXPACKS"
 buildCommand = "pip install -r requirements.txt && playwright install chromium"
 # Watch paths are evaluated from repository root, not root directory
-# Use explicit path to ensure changes are detected
+# Force watch on both folders to ensure deployments trigger
+# Note: v2 builder may ignore this, but Dashboard should also be set
 watchPatterns = [
-  "scrapegoat/**"
+  "scrapegoat/**",
+  "chimera-core/**"
 ]
 
 [deploy]
