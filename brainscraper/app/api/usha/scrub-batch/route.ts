@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
     
     // Get USHA JWT token (required for USHA DNC API)
     // NOTE: The USHA DNC API requires a valid USHA JWT token, NOT a Cognito token
-    let token: string;
+    let token: string | null;
     try {
       token = await getUshaToken();
       console.log('✅ [DNC SCRUB] Using USHA JWT token for DNC API');
