@@ -171,7 +171,7 @@ export async function POST(request: NextRequest) {
 
     // Get USHA token (will be refreshed automatically if expired)
     console.log(`🔑 [DNC CSV SCRUB] Getting USHA JWT token...`);
-    let token: string;
+    let token: string | null;
     try {
       token = await getUshaToken();
       console.log(`✅ [DNC CSV SCRUB] Token obtained successfully\n`);
@@ -184,9 +184,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (!token) {
+      console.error(`❌ [DNC CSV SCRUB] Token is null/undefined`);
+      return NextResponse.json(
+        { error: 'Token is required. Token fetch returned null. Please update USHA_JWT_TOKEN in your environment variables.' },
+        { status: 401 }
+      );
+    }
+
     // Create a function to get fresh token (for retry on 401/403)
     // This will update the token variable for subsequent batches
-    const getFreshToken = async (): Promise<string> => {
+    const getFreshToken = async (): Promise<string | null> => {
       console.log(`🔄 [DNC CSV SCRUB] Refreshing token for subsequent requests...`);
       clearTokenCache();
       const freshToken = await getUshaToken(null, true); // Force refresh
