@@ -114,13 +114,12 @@ export async function POST(request: NextRequest) {
           
           if (!ushaJwtToken) {
             console.error(`  ❌ [DNC SCRUB] ${normalizedPhone}: No USHA JWT token available`);
-            results.push({
-              phone: phoneNumber,
-              isDoNotCall: false,
-              canContact: false,
+            return {
+              phone: phone,
+              isDNC: false,
+              status: 'ERROR',
               error: 'No USHA JWT token available',
-            });
-            continue;
+            };
           }
           
           const url = `https://api-business-agent.ushadvisors.com/Leads/api/leads/scrubphonenumber?currentContextAgentNumber=${encodeURIComponent(currentContextAgentNumber)}&phone=${encodeURIComponent(normalizedPhone)}`;
