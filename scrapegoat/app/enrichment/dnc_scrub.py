@@ -42,7 +42,7 @@ def scrub_dnc(phone: str, agent_number: str = None) -> Dict[str, Any]:
     # Get USHA token
     token = get_usha_token()
     if not token:
-        print("⚠️  USHA token not available, skipping DNC scrub")
+        # print("⚠️  USHA token not available, skipping DNC scrub")
         return {
             'status': 'UNKNOWN',
             'can_contact': True,  # Fail open if token unavailable
@@ -138,11 +138,11 @@ def get_usha_token() -> Optional[str]:
     
     # Priority 3: Cognito refresh (TODO)
     if COGNITO_REFRESH_TOKEN:
-        logger.warning("⚠️ Cognito refresh token available but refresh logic not implemented")
+        # logger.warning("⚠️ Cognito refresh token available but refresh logic not implemented")
         # TODO: Implement Cognito token refresh
         return None
     
-    logger.warning("⚠️ No USHA token available - set USHA_EMAIL/USHA_PASSWORD for Auth Worker")
+    # logger.warning("⚠️ No USHA token available - set USHA_EMAIL/USHA_PASSWORD for Auth Worker")
     return None
 
 

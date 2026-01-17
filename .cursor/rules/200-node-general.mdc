@@ -41,8 +41,10 @@ globs:
 
 ## 🚨 CRITICAL: ZERO REGRESSION PROTOCOL
 
-### The 50+ API Routes Are Sacred
+### The 64 API Routes Are Sacred
 **Rule:** Never modify existing API routes unless explicitly requested
+
+**Verified Count:** 64 route files, 98 route handlers (audit date: 2026-01-17)
 
 **Protected Routes:**
 - `/api/aggregate-enriched-leads` - Lead aggregation (see `data-protection.mdc`)

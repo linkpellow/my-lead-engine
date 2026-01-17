@@ -1,0 +1,370 @@
+---
+description: "Integration Testing Guide - How to Verify Component Connections Work (Project-Specific)"
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+# Integration Testing Guide
+
+## 🧪 Complete Component Connection Verification
+
+**This is a PROJECT-SPECIFIC guide** for the Triple-Vessel system. It shows how to verify each integration point works by testing the actual code paths in THIS codebase.
+
+---
+
+## 🔍 Integration Point 1: BrainScraper Enriched Leads Display
+
+### What to Verify
+**Claim:** BrainScraper displays enriched leads from `enriched-all-leads.json`
+
+### How to Test
+```bash
+# 1. Verify the API endpoint exists
+test -f brainscraper/app/api/load-enriched-results/route.ts && echo "✅ EXISTS"
+
+# 2. Check what it actually reads
+grep -A 5 "getDataFilePath\|enriched-all-leads" brainscraper/app/api/load-enriched-results/route.ts
+
+# 3. Verify the frontend calls this endpoint
+grep -A 2 "load-enriched-results" brainscraper/app/enriched/page.tsx
+
+# 4. Test the actual flow
+cd brainscraper
+npm run dev
+# Open http://localhost:3000/enriched
+# Check browser console for API calls
+# Verify it calls /api/load-enriched-results
+```
+
+### Expected Result
+- ✅ API endpoint exists at `app/api/load-enriched-results/route.ts`
+- ✅ Reads from `enriched-all-leads.json` (NOT PostgreSQL)
+- ✅ Frontend calls `/api/load-enriched-results`
+- ✅ Returns leads from JSON file
+
+### Verification Code
+```typescript
+// Verified in: brainscraper/app/api/load-enriched-results/route.ts:37-38
+const filePath = getDataFilePath('enriched-all-leads.json');
+const content = safeReadFile(filePath);
+// NOT: PostgreSQL query
+```
+
+---
+
+## 🔍 Integration Point 2: Scrapegoat Redis Queue
+
+### What to Verify
+**Claim:** Scrapegoat API pushes to Redis, workers consume from Redis
+
+### How to Test
+```bash
+# 1. Verify producer (API endpoint)
+grep -A 3 "lpush.*leads_to_enrich" scrapegoat/main.py
+
+# 2. Verify consumer (worker)
+grep -A 3 "brpop.*leads_to_enrich" scrapegoat/start_redis_worker.py
+
+# 3. Test the actual flow
+# Start Redis
+redis-server
+
+# Start Scrapegoat API
+cd scrapegoat && python main.py
+
+# Push a test lead
+curl -X POST http://localhost:8000/worker/process-lead \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Test","linkedinUrl":"test"}'
+
+# Check Redis queue
+redis-cli LLEN leads_to_enrich
+# Should show: 1
+
+# Start worker
+python start_redis_worker.py
+
+# Check queue again (should decrease)
+redis-cli LLEN leads_to_enrich
+```
+
+### Expected Result
+- ✅ API endpoint at `/worker/process-lead` pushes to Redis
+- ✅ Worker consumes from Redis queue
+- ✅ Queue length decreases when worker processes
+
+### Verification Code
+```python
+# Producer: scrapegoat/main.py:110
+get_redis().lpush("leads_to_enrich", json.dumps(lead_data))
+
+# Consumer: scrapegoat/start_redis_worker.py:163
+result = redis_client.brpop(QUEUE_NAME, timeout=10)
+```
+
+---
+
+## 🔍 Integration Point 3: Scrapegoat → PostgreSQL
+
+### What to Verify
+**Claim:** Scrapegoat workers save enriched leads to PostgreSQL
+
+### How to Test
+```bash
+# 1. Verify database write code exists
+test -f scrapegoat/app/enrichment/database.py && echo "✅ EXISTS"
+
+# 2. Check actual INSERT statement
+grep -A 10 "INSERT INTO leads" scrapegoat/app/enrichment/database.py
+
+# 3. Verify it's called from worker
+grep -r "save_enriched_lead\|database.py" scrapegoat/app/workers/
+
+# 4. Test the actual flow
+# Ensure PostgreSQL is running
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM leads;"
+
+# Process a lead through worker
+# (see Integration Point 2)
+
+# Check database
+psql $DATABASE_URL -c "SELECT * FROM leads ORDER BY enriched_at DESC LIMIT 5;"
+```
+
+### Expected Result
+- ✅ Database write code exists
+- ✅ Uses `INSERT INTO leads ... ON CONFLICT DO NOTHING`
+- ✅ Called from worker after enrichment
+- ✅ Leads appear in PostgreSQL after processing
+
+### Verification Code
+```python
+# Verified in: scrapegoat/app/enrichment/database.py
+cur.execute("""
+    INSERT INTO leads (linkedin_url, name, phone, ...)
+    VALUES (%s, %s, %s, ...)
+    ON CONFLICT (linkedin_url) DO NOTHING
+""", (...))
+```
+
+---
+
+## 🔍 Integration Point 4: Chimera Core → Chimera Brain (gRPC)
+
+### What to Verify
+**Claim:** Chimera Core connects to Chimera Brain via gRPC on port 50051
+
+### How to Test
+```bash
+# 1. Verify client code exists
+test -f chimera-core/src/client.rs && echo "✅ EXISTS"
+
+# 2. Check connection address
+grep -A 5 "chimera-brain\|CHIMERA_BRAIN_ADDRESS" chimera-core/src/client.rs
+
+# 3. Verify server code exists
+test -f chimera_brain/server.py && echo "✅ EXISTS"
+
+# 4. Check server listens on correct port
+grep -A 3 "50051\|CHIMERA_BRAIN_PORT" chimera_brain/server.py
+
+# 5. Test the actual connection
+# Start Chimera Brain
+cd chimera_brain && python server.py &
+BRAIN_PID=$!
+
+# Wait for startup
+sleep 5
+
+# Start Chimera Core
+cd chimera-core && cargo run
+
+# Check logs for connection
+# Should see: "✅ Connected to The Brain"
+```
+
+### Expected Result
+- ✅ Client connects to `chimera-brain.railway.internal:50051` (Railway) or `localhost:50051` (local)
+- ✅ Server listens on port 50051 for gRPC
+- ✅ Connection succeeds and logs show success
+
+### Verification Code
+```rust
+// Client: chimera-core/src/client.rs:24-25
+return env::var("CHIMERA_BRAIN_ADDRESS")
+    .unwrap_or_else(|_| "http://chimera-brain.railway.internal:50051".to_string());
+
+// Server: chimera_brain/server.py:296-297
+listen_addr = f"[::]:{grpc_port}"  # grpc_port = 50051
+server.add_insecure_port(listen_addr)
+```
+
+---
+
+## 🔍 Integration Point 5: Chimera Brain Health Check
+
+### What to Verify
+**Claim:** Chimera Brain serves HTTP health check on port 8080
+
+### How to Test
+```bash
+# 1. Verify health server code exists
+grep -A 10 "start_health_server\|HealthCheckHandler" chimera_brain/server.py
+
+# 2. Check port configuration
+grep "PORT\|8080" chimera_brain/railway.toml
+
+# 3. Test the actual endpoint
+# Start Chimera Brain
+cd chimera_brain && python server.py &
+BRAIN_PID=$!
+
+# Wait for startup
+sleep 5
+
+# Test health endpoint
+curl http://localhost:8080/health
+# Should return: {"status":"healthy","service":"chimera-brain"}
+```
+
+### Expected Result
+- ✅ Health server starts on port 8080
+- ✅ Returns JSON with status
+- ✅ Separate from gRPC server (port 50051)
+
+### Verification Code
+```python
+# Verified in: chimera_brain/server.py:249-257
+def start_health_server(port: int = 8080):
+    server_address = ('::', port)
+    server = HTTPServerV6(server_address, HealthCheckHandler)
+    # Serves /health endpoint
+```
+
+---
+
+## 🔍 Integration Point 6: BrainScraper In-Memory Enrichment
+
+### What to Verify
+**Claim:** BrainScraper enriches leads in-memory and saves to JSON, NOT Redis
+
+### How to Test
+```bash
+# 1. Verify enrichment function exists
+test -f brainscraper/utils/enrichData.ts && echo "✅ EXISTS"
+
+# 2. Check it doesn't use Redis
+grep -r "redis\|Redis\|REDIS" brainscraper/utils/enrichData.ts
+# Should return: nothing (or only comments)
+
+# 3. Verify aggregation endpoint
+grep -A 5 "aggregate-enriched-leads" brainscraper/app/api/aggregate-enriched-leads/route.ts
+
+# 4. Check it saves to JSON
+grep -A 3 "enriched-all-leads.json" brainscraper/app/api/aggregate-enriched-leads/route.ts
+
+# 5. Test the actual flow
+# Open BrainScraper UI
+# Search for leads
+# Click "Enrich"
+# Check browser console - should show in-memory processing
+# Verify enriched-all-leads.json is updated
+```
+
+### Expected Result
+- ✅ Enrichment happens in-memory (synchronous)
+- ✅ Saves to `enriched-all-leads.json` via API
+- ✅ Does NOT push to Redis queue
+- ✅ No Redis imports in enrichment code
+
+### Verification Code
+```typescript
+// Verified in: brainscraper/utils/enrichData.ts
+// Function: enrichData() - processes leads synchronously
+// No Redis imports or LPUSH calls
+
+// Verified in: brainscraper/app/api/aggregate-enriched-leads/route.ts:37
+const filePath = getDataFilePath('enriched-all-leads.json');
+// Saves to JSON file, not Redis
+```
+
+---
+
+## 📋 Complete Integration Test Checklist
+
+### Test All Connections
+```bash
+# 1. BrainScraper → JSON File
+curl http://localhost:3000/api/load-enriched-results
+# Verify: Returns leads from enriched-all-leads.json
+
+# 2. Scrapegoat API → Redis
+curl -X POST http://localhost:8000/worker/process-lead -d '{"name":"Test"}'
+redis-cli LLEN leads_to_enrich
+# Verify: Queue length increases
+
+# 3. Scrapegoat Worker → PostgreSQL
+# (After worker processes lead)
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM leads;"
+# Verify: Lead count increases
+
+# 4. Chimera Core → Chimera Brain
+# (Start both services, check logs)
+# Verify: "✅ Connected to The Brain" in Core logs
+
+# 5. Chimera Brain Health
+curl http://localhost:8080/health
+# Verify: {"status":"healthy","service":"chimera-brain"}
+```
+
+---
+
+## 🎯 Testing During Development
+
+### Before Making Changes
+1. ✅ Run integration tests to establish baseline
+2. ✅ Document current behavior
+3. ✅ Verify all connections work
+
+### After Making Changes
+1. ✅ Re-run integration tests
+2. ✅ Verify connections still work
+3. ✅ Check for regressions
+4. ✅ Update rules if behavior changed
+
+---
+
+## 🚨 Common Integration Issues
+
+### Issue: "Service X can't connect to Service Y"
+**Verify:**
+- Service Y is actually running
+- Port numbers are correct
+- Network configuration (local vs Railway)
+- Environment variables are set
+
+### Issue: "Data not appearing where expected"
+**Verify:**
+- Actual code path (trace the flow)
+- File paths and database connections
+- Queue names and table names
+- Error logs for failures
+
+### Issue: "Integration works locally but not on Railway"
+**Verify:**
+- Internal DNS names (`.railway.internal`)
+- Port bindings (0.0.0.0 vs localhost)
+- Environment variables in Railway
+- Service dependencies and startup order
+
+---
+
+## ✅ Success Criteria
+
+**Integration is working when:**
+- ✅ All services can connect to their dependencies
+- ✅ Data flows correctly through each path
+- ✅ Health checks return expected responses
+- ✅ No connection errors in logs
+- ✅ Actual code matches documented behavior

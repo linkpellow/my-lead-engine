@@ -3,11 +3,15 @@ Vision Service - The Brain of Project Chimera
 
 This service uses a Vision-Language Model (VLM) to understand visual intent
 and return coordinates for UI elements based on natural language commands.
+
+Includes "Trauma Center" functionality for autonomous selector re-mapping.
 """
 
 import io
 import logging
-from typing import Tuple, Optional
+import re
+from datetime import datetime
+from typing import Tuple, Optional, Dict, Any
 import torch
 from PIL import Image
 import numpy as np
@@ -189,6 +193,135 @@ class VisualIntentProcessor:
         # In reality, you'd decode the model output properly
         width, height = image_size
         return (width // 2, height // 2, 0.7)
+    
+    def find_new_selector(
+        self,
+        screenshot: bytes,
+        intent_description: str,
+        domain: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Find a new CSS/XPath selector for a UI element using VLM.
+        
+        This is the "Trauma Center" method - when a selector fails,
+        this method uses the VLM to autonomously re-map the selector.
+        
+        Args:
+            screenshot: PNG image bytes
+            intent_description: Natural language description (e.g., "the search input field")
+            domain: Optional domain/URL for context
+        
+        Returns:
+            Dict with:
+                - selector: CSS or XPath selector string
+                - selector_type: "css" or "xpath"
+                - confidence: Confidence score (0.0 to 1.0)
+                - coordinates: (x, y) tuple
+                - metadata: Additional metadata (attributes, etc.)
+        """
+        try:
+            logger.info(f"🔧 Trauma Center: Finding new selector for '{intent_description}'")
+            
+            # Validate image
+            if not screenshot or len(screenshot) < 8:
+                logger.warning("Invalid screenshot for selector recovery")
+                return {
+                    'selector': None,
+                    'selector_type': 'css',
+                    'confidence': 0.0,
+                    'coordinates': (0, 0),
+                    'metadata': {}
+                }
+            
+            # Load image
+            image_stream = io.BytesIO(screenshot)
+            image = Image.open(image_stream)
+            image = image.convert("RGB")
+            width, height = image.size
+            
+            # Get coordinates using existing coordinate detection
+            x, y, coord_confidence = self.get_click_coordinates(screenshot, intent_description)
+            
+            # Generate selector based on intent and coordinates
+            # In production, this would use a specialized VLM that outputs selectors
+            # For now, we use heuristics and coordinate-based generation
+            selector = self._generate_selector_from_intent(intent_description, x, y, width, height)
+            
+            # Calculate confidence based on coordinate confidence and selector quality
+            confidence = coord_confidence * 0.8  # Slightly lower for selector generation
+            
+            logger.info(f"✅ Trauma Center: Generated selector '{selector}' with confidence {confidence:.2f}")
+            
+            return {
+                'selector': selector,
+                'selector_type': 'css',
+                'confidence': confidence,
+                'coordinates': (x, y),
+                'metadata': {
+                    'intent': intent_description,
+                    'domain': domain,
+                    'generated_at': datetime.utcnow().isoformat(),
+                    'image_size': {'width': width, 'height': height}
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Trauma Center: Failed to find new selector: {e}", exc_info=True)
+            return {
+                'selector': None,
+                'selector_type': 'css',
+                'confidence': 0.0,
+                'coordinates': (0, 0),
+                'metadata': {'error': str(e)}
+            }
+    
+    def _generate_selector_from_intent(
+        self,
+        intent: str,
+        x: int,
+        y: int,
+        image_width: int,
+        image_height: int
+    ) -> str:
+        """
+        Generate a CSS selector from intent description and coordinates.
+        
+        This is a heuristic-based approach. In production, you'd use a
+        VLM that can analyze the screenshot and generate accurate selectors.
+        
+        Args:
+            intent: Intent description
+            x, y: Coordinates
+            image_width, image_height: Image dimensions
+        
+        Returns:
+            CSS selector string
+        """
+        intent_lower = intent.lower()
+        
+        # Intent-based selectors
+        if "button" in intent_lower or "click" in intent_lower:
+            if "login" in intent_lower or "sign in" in intent_lower:
+                # Try common login button selectors
+                return "button[type='submit'], .login-button, #login-button, button:contains('Login'), button:contains('Sign In')"
+            elif "submit" in intent_lower:
+                return "button[type='submit']"
+            else:
+                return "button"
+        
+        elif "input" in intent_lower or "field" in intent_lower or "search" in intent_lower:
+            if "search" in intent_lower:
+                return "input[type='search'], input[name='search'], #search, .search-input, input[placeholder*='search' i]"
+            else:
+                return "input"
+        
+        elif "link" in intent_lower or "anchor" in intent_lower:
+            return "a"
+        
+        # Fallback: Use coordinate-based selector (not ideal, but works)
+        # In production, VLM would generate proper selector
+        logger.warning(f"Using fallback selector generation for intent: {intent}")
+        return f"*"  # Generic fallback - would need DOM access for precise selector
 
 
 class SimpleCoordinateDetector:

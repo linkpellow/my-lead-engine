@@ -23,6 +23,15 @@ try:
     from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
     import redis
+    # Handling redis-py version differences for search index definition (snake_case vs camelCase)
+    try:
+        from redis.commands.search.index_definition import IndexDefinition, IndexType
+    except ImportError:
+        try:
+            from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+        except ImportError:
+            IndexDefinition = None
+            IndexType = None
     import json
     from typing import Dict, Any
     print("✅ [STARTUP] Core imports successful", flush=True)

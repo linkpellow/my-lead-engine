@@ -1,0 +1,498 @@
+---
+description: "Triple-Vessel Component Relationships - How Services Interact and When to Use Each"
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+# Component Relationships & Decision Guide
+
+## 🗺️ Complete Service Interaction Map
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    TRIPLE-VESSEL SYSTEM                          │
+│                                                                   │
+│  ┌──────────────────────┐                                        │
+│  │  1. The General      │                                        │
+│  │  (brainscraper)      │                                        │
+│  │  Node.js/Next.js     │                                        │
+│  │  Port: 3000          │                                        │
+│  └──────────┬───────────┘                                        │
+│             │                                                     │
+│             │ Redis LPUSH                                        │
+│             │ Queue: "leads_to_enrich"                           │
+│             │                                                     │
+│             ▼                                                     │
+│  ┌──────────────────────────────────────┐                       │
+│  │         Redis (Shared)                │                       │
+│  │  • Queue: leads_to_enrich             │                       │
+│  │  • DLQ: failed_leads                  │                       │
+│  │  • Hive Mind: Vector Memory (Stack)   │                       │
+│  └──────────┬────────────────────────────┘                       │
+│             │                                                     │
+│             │ Redis BRPOP                                         │
+│             │                                                     │
+│             ▼                                                     │
+│  ┌──────────────────────┐                                        │
+│  │  2. Scrapegoat       │                                        │
+│  │  (scrapegoat)        │                                        │
+│  │  FastAPI/Python      │                                        │
+│  │  Port: 8000          │                                        │
+│  └──────────┬───────────┘                                        │
+│             │                                                     │
+│             │ PostgreSQL INSERT                                  │
+│             │                                                     │
+│             ▼                                                     │
+│  ┌──────────────────────┐                                        │
+│  │  3. PostgreSQL       │                                        │
+│  │  (Shared Database)   │                                        │
+│  │  Table: leads        │                                        │
+│  └──────────────────────┘                                        │
+│                                                                   │
+│  ┌───────────────────────────────────────────────────────────┐   │
+│  │              CHIMERA SYSTEM (Separate)                    │   │
+│  │                                                           │   │
+│  │  ┌──────────────────────┐                                │   │
+│  │  │  4. The Body         │                                │   │
+│  │  │  (chimera-core)      │                                │   │
+│  │  │  Rust Worker         │                                │   │
+│  │  │  No exposed port     │                                │   │
+│  │  └──────────┬───────────┘                                │   │
+│  │             │                                               │   │
+│  │             │ gRPC (chimera.proto)                          │   │
+│  │             │ Port: 50051                                  │   │
+│  │             │ Address: chimera-brain.railway.internal      │   │
+│  │             │                                               │   │
+│  │             ▼                                               │   │
+│  │  ┌──────────────────────┐                                │   │
+│  │  │  5. The Brain        │                                │   │
+│  │  │  (chimera_brain)     │                                │   │
+│  │  │  Python 3.11         │                                │   │
+│  │  │  HTTP: 8080          │                                │   │
+│  │  │  gRPC: 50051         │                                │   │
+│  │  └──────────┬───────────┘                                │   │
+│  │             │                                               │   │
+│  │             │ Redis (Hive Mind)                            │   │
+│  │             │ Redis Stack (FT.CREATE)                      │   │
+│  │             │                                               │   │
+│  │             ▼                                               │   │
+│  │  ┌──────────────────────┐                                │   │
+│  │  │  Redis Stack        │                                │   │
+│  │  │  (Vector Memory)    │                                │   │
+│  │  └──────────────────────┘                                │   │
+│  └───────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🔄 Data Flow Patterns
+
+### Pattern 1: Lead Enrichment Flow (Two Separate Paths)
+
+**Path A: BrainScraper In-Memory Enrichment (Primary)**
+```
+User Action (LinkedIn Search)
+    ↓
+brainscraper/app/components/LinkedInLeadGenerator.tsx
+    ↓
+RapidAPI: premium_search_person
+    ↓
+In-Memory Enrichment (enrichData.ts):
+  • Skip-Tracing API
+  • Telnyx Phone Validation
+  • USHA DNC Scrub
+  • Census Demographics
+    ↓
+brainscraper/app/api/aggregate-enriched-leads/route.ts
+    ↓
+Save to enriched-all-leads.json (file system)
+    ↓
+brainscraper/app/enriched/page.tsx (reads from JSON file)
+```
+
+**Path B: Scrapegoat Queue-Based Enrichment (Alternative)**
+```
+API Call to scrapegoat/main.py
+    ↓
+POST /worker/process-lead
+    ↓
+Redis LPUSH: "leads_to_enrich"
+    ↓
+[Redis Queue: leads_to_enrich]
+    ↓
+scrapegoat/start_redis_worker.py (BRPOP)
+    ↓
+Enrichment Process (Pipeline Engine):
+  • Skip-Tracing API
+  • Telnyx Phone Validation
+  • USHA DNC Scrub
+  • Census Demographics
+    ↓
+PostgreSQL INSERT INTO leads
+    ↓
+brainscraper/app/enriched/page.tsx (reads from PostgreSQL)
+```
+
+**Key Files:**
+- **Path A Producer:** `brainscraper/app/components/LinkedInLeadGenerator.tsx`
+- **Path A Enrichment:** `brainscraper/utils/enrichData.ts`
+- **Path A Storage:** `brainscraper/app/api/aggregate-enriched-leads/route.ts` → `enriched-all-leads.json`
+- **Path B Producer:** `scrapegoat/main.py` (API endpoint)
+- **Path B Queue:** Redis `leads_to_enrich`
+- **Path B Consumer:** `scrapegoat/start_redis_worker.py`
+- **Path B Storage:** PostgreSQL `leads` table (via `scrapegoat/app/enrichment/database.py`)
+- **Viewer:** `brainscraper/app/enriched/page.tsx` 
+  - Calls: `/api/load-enriched-results` (line 147)
+  - Reads from: `enriched-all-leads.json` (file system)
+  - Does NOT read from PostgreSQL (verified: 2026-01-17)
+
+---
+
+### Pattern 2: Vision Processing Flow (Chimera Core → Chimera Brain)
+
+```
+Chimera Core (Rust Worker)
+    ↓
+Takes screenshot of browser
+    ↓
+gRPC: ProcessVision(screenshot, context)
+    ↓
+chimera_brain/server.py → BrainService.ProcessVision()
+    ↓
+chimera_brain/vision_service.py → VLM processing
+    ↓
+gRPC Response: VisionResponse(coordinates, description)
+    ↓
+Chimera Core uses coordinates for browser automation
+```
+
+**Key Files:**
+- Client: `chimera-core/src/client.rs`
+- Server: `chimera_brain/server.py`
+- Vision: `chimera_brain/vision_service.py`
+- Contract: `@proto/chimera.proto`
+
+---
+
+### Pattern 3: Memory Query Flow (Chimera Core → Chimera Brain → Redis)
+
+```
+Chimera Core needs to recall past experience
+    ↓
+gRPC: QueryMemory(query, top_k)
+    ↓
+chimera_brain/server.py → BrainService.QueryMemory()
+    ↓
+chimera_brain/hive_mind.py → Vector search
+    ↓
+Redis Stack: FT.SEARCH (vector similarity)
+    ↓
+gRPC Response: MemoryResponse(results)
+    ↓
+Chimera Core uses results for decision making
+```
+
+**Key Files:**
+- Client: `chimera-core/src/client.rs`
+- Server: `chimera_brain/server.py`
+- Memory: `chimera_brain/hive_mind.py`
+- Storage: Redis Stack (vector index)
+
+---
+
+## 🎯 Decision Tree: "Where Do I Make This Change?"
+
+### "I need to add a new API endpoint"
+→ **brainscraper/app/api/** (if it's a Next.js API route)
+→ **scrapegoat/main.py** (if it's a FastAPI endpoint)
+
+### "I need to modify lead enrichment logic"
+→ **brainscraper/utils/enrichData.ts** (in-memory enrichment - primary path)
+→ **scrapegoat/app/workers/redis_queue_worker.py** (queue-based enrichment - alternative path)
+→ **scrapegoat/app/pipeline/** (pipeline engine for queue-based enrichment)
+
+### "I need to change how leads are discovered"
+→ **brainscraper/app/components/LinkedInLeadGenerator.tsx** (UI)
+→ **brainscraper/utils/** (scraping utilities)
+
+### "I need to add vision processing capabilities"
+→ **chimera_brain/vision_service.py** (VLM logic)
+→ **chimera_brain/server.py** (gRPC handler)
+
+### "I need to modify browser automation"
+→ **chimera-core/src/stealth.rs** (stealth logic)
+→ **chimera-core/src/main.rs** (worker orchestration)
+
+### "I need to change how services communicate"
+→ **@proto/chimera.proto** (update contract first!)
+→ Then regenerate proto files in each service
+
+### "I need to modify the database schema"
+→ **PostgreSQL** (migration)
+→ Update both `scrapegoat` (writes) and `brainscraper` (reads)
+
+---
+
+## ⚠️ Common Confusion Points
+
+### 1. Directory Naming
+**❌ WRONG:** `chimera-brain` (hyphen)  
+**✅ CORRECT:** `chimera_brain` (underscore)
+
+**Why:** Railway root directories use underscores. The service name can be `chimera-brain-v1` but the root directory must be `chimera_brain`.
+
+---
+
+### 2. Two Separate Systems
+**System 1: Lead Enrichment (BrainScraper + Scrapegoat)**
+- Uses Redis queues
+- Uses PostgreSQL
+- **DO NOT** mix with Chimera system
+
+**System 2: Chimera (Brain + Core)**
+- Uses gRPC
+- Uses Redis Stack (Hive Mind)
+- **DO NOT** mix with enrichment system
+
+**Key Rule:** These are separate systems that can coexist but don't directly interact.
+
+---
+
+### 3. When to Use Which Communication Method
+
+| Task | Method | Service | Example |
+|------|--------|---------|---------|
+| Lead discovery → enrichment | Redis Queue | BrainScraper → Scrapegoat | `LPUSH leads_to_enrich` |
+| Enriched lead storage | PostgreSQL | Scrapegoat → Database | `INSERT INTO leads` |
+| Vision processing request | gRPC | Chimera Core → Chimera Brain | `ProcessVision()` |
+| Memory query | gRPC → Redis Stack | Chimera Core → Brain → Redis | `QueryMemory()` |
+| Health checks | HTTP | All services | `GET /health` |
+
+---
+
+### 4. Service Isolation Rules
+
+**❌ NEVER DO:**
+- Import Python code in Node.js (`brainscraper`)
+- Import Rust code in Python (`chimera_brain`)
+- Import Node.js code in Rust (`chimera-core`)
+- Direct HTTP calls between Chimera services (use gRPC)
+- Direct code imports between any services
+
+**✅ ALWAYS DO:**
+- Use Redis for BrainScraper ↔ Scrapegoat
+- Use gRPC for Chimera Core ↔ Chimera Brain
+- Use PostgreSQL for persistent storage
+- Use `@proto/chimera.proto` for gRPC contracts
+
+---
+
+### 5. Port Usage
+
+| Service | HTTP Port | gRPC Port | Purpose |
+|---------|-----------|-----------|---------|
+| **brainscraper** | 3000 | - | Next.js UI |
+| **scrapegoat** | 8000 | - | FastAPI API |
+| **chimera-brain-v1** | 8080 | 50051 | HTTP: healthcheck<br>gRPC: service |
+| **chimera-core** | - | - | Worker (no exposed ports) |
+
+**Critical:** Chimera Brain uses **TWO ports**:
+- Port 8080: HTTP healthcheck (Railway requirement)
+- Port 50051: gRPC service (internal only)
+
+---
+
+## 🔍 Integration Point Reference
+
+### Redis Queue Integration
+
+**Note:** BrainScraper does NOT push to Redis. It uses in-memory enrichment. Only Scrapegoat uses Redis queues.
+
+**Producer (Scrapegoat API):**
+```python
+# File: scrapegoat/main.py
+@app.post("/worker/process-lead")
+async def process_lead(lead_data: Dict[str, Any]):
+    get_redis().lpush("leads_to_enrich", json.dumps(lead_data))
+    return {"status": "queued"}
+```
+
+**Consumer (Scrapegoat Worker):**
+```python
+# File: scrapegoat/start_redis_worker.py
+import redis
+redis_client = redis.from_url(os.getenv("REDIS_URL"))
+
+while True:
+    result = redis_client.brpop('leads_to_enrich', timeout=10)
+    if result:
+        queue_name, lead_json = result
+        lead_data = json.loads(lead_json)
+        # Process lead...
+```
+
+---
+
+### gRPC Integration
+
+**Client (Chimera Core):**
+```rust
+// File: chimera-core/src/client.rs
+use tonic::Request;
+
+let mut client = BrainClient::connect("http://chimera-brain.railway.internal:50051").await?;
+
+let request = Request::new(ProcessVisionRequest {
+    screenshot: screenshot_bytes,
+    context: "Find login button".to_string(),
+    text_command: "login button".to_string(),
+});
+
+let response = client.process_vision(request).await?;
+```
+
+**Server (Chimera Brain):**
+```python
+# File: chimera_brain/server.py
+class BrainService(chimera_pb2_grpc.BrainServicer):
+    def ProcessVision(self, request, context):
+        screenshot = request.screenshot
+        context = request.context
+        # Process with VLM...
+        return VisionResponse(...)
+```
+
+---
+
+### PostgreSQL Integration
+
+**Writer (Scrapegoat):**
+```python
+# File: scrapegoat/app/workers/redis_queue_worker.py
+import psycopg2
+
+conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+cur = conn.cursor()
+
+cur.execute("""
+    INSERT INTO leads (linkedin_url, name, phone, ...)
+    VALUES (%s, %s, %s, ...)
+    ON CONFLICT (linkedin_url) DO NOTHING
+""", (linkedin_url, name, phone, ...))
+conn.commit()
+```
+
+**Reader (BrainScraper):**
+```typescript
+// File: brainscraper/app/api/load-enriched-results/route.ts
+// ACTUAL IMPLEMENTATION: Reads from file system, NOT PostgreSQL
+import { getDataFilePath, safeReadFile } from '@/utils/dataDirectory';
+
+const filePath = getDataFilePath('enriched-all-leads.json');
+const content = safeReadFile(filePath);
+const data = JSON.parse(content);
+// Returns leads from JSON file, not database
+```
+
+**Note:** BrainScraper does NOT read from PostgreSQL. It reads from `enriched-all-leads.json` file.
+
+---
+
+## 🧪 Testing Each Component
+
+### Test BrainScraper → Scrapegoat Flow
+
+1. **Start services:**
+   ```bash
+   LOCAL_MODE=true ./start-triple-vessel.sh
+   ```
+
+2. **Trigger lead discovery:**
+   - Open `http://localhost:3000`
+   - Use LinkedIn Lead Generator
+   - Search for leads
+
+3. **Verify Redis queue:**
+   ```bash
+   redis-cli LLEN leads_to_enrich
+   ```
+
+4. **Check Scrapegoat logs:**
+   ```bash
+   docker-compose logs scrapegoat-worker --tail 50
+   ```
+
+5. **Verify PostgreSQL:**
+   ```bash
+   psql $DATABASE_URL -c "SELECT COUNT(*) FROM leads;"
+   ```
+
+---
+
+### Test Chimera Core → Chimera Brain Flow
+
+1. **Start Chimera services:**
+   ```bash
+   cd chimera_brain && python server.py &
+   cd chimera-core && cargo run
+   ```
+
+2. **Check connection:**
+   - Look for: `✅ Connected to The Brain`
+   - Check logs for gRPC calls
+
+3. **Test vision processing:**
+   - Chimera Core should send screenshot
+   - Chimera Brain should process and return coordinates
+
+4. **Verify Hive Mind:**
+   - Check Redis Stack for vector index
+   - Test memory queries via gRPC
+
+---
+
+## 🚨 Critical Rules Summary
+
+1. **Service Isolation:** Never mix code between services
+2. **Communication Protocols:**
+   - BrainScraper ↔ Scrapegoat: Redis Queue
+   - Chimera Core ↔ Chimera Brain: gRPC
+   - All → PostgreSQL: SQL
+3. **Directory Names:** Use underscores (`chimera_brain` not `chimera-brain`)
+4. **Port Usage:** Chimera Brain uses 8080 (HTTP) and 50051 (gRPC)
+5. **Proto Contract:** Always update `@proto/chimera.proto` first, then regenerate
+6. **Data Protection:** Never overwrite existing enriched leads
+7. **Start Script:** Always use `start-triple-vessel.sh` - don't create new ones
+
+---
+
+## 📚 Quick Reference
+
+**Service Directories:**
+- `/brainscraper` - The General (Node.js)
+- `/scrapegoat` - Enrichment Pipeline (Python)
+- `/chimera_brain` - The Brain (Python) ⚠️ underscore!
+- `/chimera-core` - The Body (Rust)
+
+**Key Files:**
+- `start-triple-vessel.sh` - Unified start script
+- `@proto/chimera.proto` - gRPC contract
+- `docker-compose.yml` - Local development
+
+**Communication:**
+- Redis: `leads_to_enrich` queue (used by Scrapegoat, NOT BrainScraper)
+- gRPC: `chimera-brain.railway.internal:50051`
+- PostgreSQL: `leads` table (used by Scrapegoat workers)
+- File System: `enriched-all-leads.json` (used by BrainScraper primary path)
+
+---
+
+## 🎯 Remember
+
+**This is a distributed system with TWO separate subsystems:**
+1. **Lead Enrichment:** BrainScraper + Scrapegoat (Redis + PostgreSQL)
+2. **Chimera AI:** Brain + Core (gRPC + Redis Stack)
+
+**They coexist but don't directly interact.** Each has its own communication patterns and should be modified independently.

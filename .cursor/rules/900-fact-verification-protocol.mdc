@@ -1,0 +1,274 @@
+---
+description: "Fact Verification Protocol - Ensure All Rules Are Based on Actual Codebase"
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+# Fact Verification Protocol
+
+## 🎯 CRITICAL: Every Rule Must Be Verified
+
+**Before creating or updating any PROJECT RULE, you MUST verify facts against the actual codebase.**
+
+**Note:** This is a PROJECT-SPECIFIC rule. The universal principle "all decisions must be code-grounded" belongs in user rules, not here.
+
+---
+
+## ✅ Verification Checklist
+
+### 1. File Existence Verification
+**Before referencing any file:**
+- ✅ Verify the file actually exists at the specified path
+- ✅ Check the file extension matches (`.ts`, `.tsx`, `.py`, `.rs`)
+- ✅ Verify directory structure matches (underscores vs hyphens)
+- ✅ Confirm file is not in `.gitignore` or build artifacts
+
+**How to Verify:**
+```bash
+# Check if file exists
+ls -la path/to/file
+
+# Verify directory structure
+find . -name "chimera*" -type d
+```
+
+---
+
+### 2. Code Pattern Verification
+**Before documenting code patterns:**
+- ✅ Read the actual file to see the implementation
+- ✅ Verify function names, class names, and method signatures
+- ✅ Check import statements and dependencies
+- ✅ Confirm variable names and data structures
+
+**How to Verify:**
+```bash
+# Read actual file
+cat path/to/file
+
+# Search for specific patterns
+grep -r "pattern" path/to/directory
+```
+
+---
+
+### 3. Integration Point Verification
+**Before documenting service connections:**
+- ✅ Find the actual code that performs the connection
+- ✅ Verify the protocol (gRPC, Redis, HTTP, PostgreSQL)
+- ✅ Check environment variables and configuration
+- ✅ Confirm port numbers and addresses
+
+**How to Verify:**
+```bash
+# Find integration code
+grep -r "redis\|gRPC\|postgres\|DATABASE_URL" service/directory
+
+# Check actual connection code
+grep -r "connect\|lpush\|brpop" service/directory
+```
+
+---
+
+### 4. Data Flow Verification
+**Before documenting data flows:**
+- ✅ Trace the actual code path from source to destination
+- ✅ Verify each step in the flow exists
+- ✅ Check file I/O operations (read/write)
+- ✅ Confirm API endpoints and their implementations
+
+**How to Verify:**
+```bash
+# Trace data flow
+grep -r "function\|async\|await" path/to/component
+
+# Check API routes
+find app/api -name "route.ts" -exec grep -l "pattern" {} \;
+```
+
+---
+
+### 5. Configuration Verification
+**Before documenting configuration:**
+- ✅ Read actual config files (`railway.toml`, `package.json`, `Cargo.toml`)
+- ✅ Verify environment variable names
+- ✅ Check port numbers and service names
+- ✅ Confirm build commands and start commands
+
+**How to Verify:**
+```bash
+# Read config files
+cat service/railway.toml
+cat service/package.json
+
+# Check environment variables
+grep -r "process.env\|os.getenv\|env::var" service/directory
+```
+
+---
+
+## 🔍 Fact-Checking Process
+
+### Step 1: Identify the Claim
+**Example:** "BrainScraper reads enriched leads from PostgreSQL"
+
+### Step 2: Find the Actual Implementation
+```bash
+# Search for where enriched leads are loaded
+grep -r "load.*enriched\|enriched.*load" brainscraper/app/enriched
+grep -r "PostgreSQL\|pg\.\|Pool" brainscraper/app/enriched
+```
+
+### Step 3: Read the Actual Code
+```typescript
+// Read: brainscraper/app/enriched/page.tsx
+// Find: fetch('/api/load-enriched-results')
+// Read: brainscraper/app/api/load-enriched-results/route.ts
+// Find: Reads from enriched-all-leads.json, NOT PostgreSQL
+```
+
+### Step 4: Verify Against Codebase
+- ✅ **Claim:** "Reads from PostgreSQL"
+- ✅ **Reality:** Reads from `/api/load-enriched-results` which reads from `enriched-all-leads.json`
+- ✅ **Conclusion:** Claim is FALSE - must correct rule
+
+### Step 5: Update Rule with Verified Facts
+```markdown
+**Viewer:** `brainscraper/app/enriched/page.tsx` 
+- Calls: `/api/load-enriched-results`
+- Reads from: `enriched-all-leads.json` (file system)
+- Does NOT read from PostgreSQL
+```
+
+---
+
+## 🚨 Red Flags (Stop and Verify)
+
+If you see any of these patterns, STOP and verify:
+
+- ❌ "Service X communicates with Service Y" - Verify actual code
+- ❌ "Data flows from A to B" - Trace actual code path
+- ❌ "Uses protocol X" - Check actual implementation
+- ❌ "Reads from database/queue/file" - Verify actual I/O operations
+- ❌ "Port X is used for Y" - Check config files and code
+- ❌ "File is located at path" - Verify file exists
+- ❌ "Function does X" - Read actual function implementation
+
+---
+
+## 📋 Verification Commands
+
+### Verify File Exists
+```bash
+# Check file exists
+test -f path/to/file && echo "EXISTS" || echo "NOT FOUND"
+
+# List directory contents
+ls -la path/to/directory
+```
+
+### Verify Code Pattern
+```bash
+# Search for pattern
+grep -r "pattern" path/to/directory
+
+# Count occurrences
+grep -r "pattern" path/to/directory | wc -l
+```
+
+### Verify Integration
+```bash
+# Find connection code
+grep -r "connect\|lpush\|brpop\|INSERT\|SELECT" service/directory
+
+# Check imports
+grep -r "import\|from\|use" service/directory | grep "redis\|grpc\|pg"
+```
+
+### Verify Configuration
+```bash
+# Read config files
+cat service/railway.toml
+cat service/package.json
+cat service/Cargo.toml
+
+# Check environment variables
+grep -r "process.env\|os.getenv\|env::var" service/directory
+```
+
+---
+
+## ✅ Verified Facts (Reference)
+
+### Directory Names
+- ✅ `chimera_brain` (underscore) - Verified: `ls -d chimera_brain`
+- ✅ `chimera-core` (hyphen) - Verified: `ls -d chimera-core`
+- ✅ `brainscraper` (no hyphen/underscore) - Verified: `ls -d brainscraper`
+- ✅ `scrapegoat` (no hyphen/underscore) - Verified: `ls -d scrapegoat`
+
+### Ports
+- ✅ `brainscraper`: 3000 - Verified: `docker-compose.yml` and `railway.toml`
+- ✅ `scrapegoat`: 8000 - Verified: `docker-compose.yml` and `railway.toml`
+- ✅ `chimera_brain`: 8080 (HTTP), 50051 (gRPC) - Verified: `chimera_brain/railway.toml` and `server.py`
+
+### Data Storage
+- ✅ BrainScraper enriched leads: `enriched-all-leads.json` - Verified: `load-enriched-results/route.ts`
+- ✅ Scrapegoat enriched leads: PostgreSQL `leads` table - Verified: `scrapegoat/app/enrichment/database.py`
+- ✅ Redis queue: `leads_to_enrich` - Verified: `scrapegoat/main.py` and `start_redis_worker.py`
+
+### Service Communication
+- ✅ BrainScraper → Scrapegoat: NOT via Redis (BrainScraper uses in-memory enrichment)
+- ✅ Scrapegoat API → Redis: `lpush("leads_to_enrich")` - Verified: `scrapegoat/main.py:110`
+- ✅ Scrapegoat Worker → Redis: `brpop("leads_to_enrich")` - Verified: `scrapegoat/start_redis_worker.py:163`
+- ✅ Chimera Core → Chimera Brain: gRPC on port 50051 - Verified: `chimera-core/src/client.rs` and `chimera_brain/server.py`
+
+---
+
+## 🎯 Rule Update Protocol
+
+**When updating a rule:**
+
+1. ✅ **Identify the claim** to verify
+2. ✅ **Search codebase** for actual implementation
+3. ✅ **Read actual code** to confirm
+4. ✅ **Verify against** multiple sources if possible
+5. ✅ **Update rule** with verified facts only
+6. ✅ **Remove assumptions** and unverified claims
+7. ✅ **Document source** of verification (file paths, line numbers)
+
+---
+
+## 📝 Example: Correcting a False Claim
+
+### ❌ INCORRECT (Assumption):
+```markdown
+**Viewer:** `brainscraper/app/enriched/page.tsx` (reads from PostgreSQL)
+```
+
+### ✅ CORRECT (Verified):
+```markdown
+**Viewer:** `brainscraper/app/enriched/page.tsx`
+- Calls: `/api/load-enriched-results` (line 147)
+- Implementation: `brainscraper/app/api/load-enriched-results/route.ts`
+- Reads from: `enriched-all-leads.json` (file system, line 37-38)
+- Does NOT read from PostgreSQL
+- Verified: 2026-01-17 by reading actual code
+```
+
+---
+
+## 🚨 Remember
+
+**Every rule must be:**
+- ✅ Based on actual code, not assumptions
+- ✅ Verified against the codebase
+- ✅ Documented with source references
+- ✅ Updated when codebase changes
+- ✅ Removed if no longer accurate
+
+**Never:**
+- ❌ Assume how something works
+- ❌ Copy patterns from other projects
+- ❌ Document "intended" behavior without verification
+- ❌ Leave unverified claims in rules

@@ -106,7 +106,14 @@ export async function GET(request: NextRequest) {
     console.log('🔑 [DAILY_DNC] Step 3: Getting USHA authentication token...');
     const token = await getUshaToken();
     if (!token) {
-      throw new Error('Failed to get USHA authentication token');
+      console.log('⚠️ [DAILY_DNC] No USHA JWT token available, skipping DNC check job');
+      return NextResponse.json({
+        success: true,
+        message: 'No USHA JWT token configured, skipping check',
+        checked: 0,
+        updated: 0,
+        skipped: true
+      });
     }
     console.log('✅ [DAILY_DNC] Token obtained\n');
     

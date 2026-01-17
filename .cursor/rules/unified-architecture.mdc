@@ -12,14 +12,18 @@ globs:
 
 ## 🚀 MISSION ALPHA: TRIPLE-VESSEL SYSTEM
 
-**NEW ARCHITECTURE:** We are transitioning to a **Triple-Vessel Stealth Extraction Engine** with three isolated services:
-- **The General** (`/brainscraper`) - Node.js/Next.js orchestrator
-- **The Brain** (`/chimera-brain`) - Python 3.11 AI service (NEW)
-- **The Body** (`/chimera-core`) - Rust stealth worker swarm (NEW)
+**STATUS: ✅ DEPLOYED AND OPERATIONAL**
+
+The **Triple-Vessel Stealth Extraction Engine** consists of three isolated services:
+- **The General** (`/brainscraper`) - Node.js/Next.js orchestrator ✅ Online
+- **The Brain** (`/chimera_brain`) - Python 3.11 AI service ✅ Online
+- **The Body** (`/chimera-core`) - Rust stealth worker swarm ✅ Online
 
 **See:** `.cursor/rules/000-mission-alpha.mdc` for complete Mission Alpha documentation.
 
-**Current Status:** Check `.notes/status.md` for current integration phase.
+**Start System:** Use `./start-triple-vessel.sh` (local) or verify Railway services are online.
+
+**Current Status:** All services deployed and healthy on Railway.
 
 ---
 
@@ -27,7 +31,7 @@ globs:
 
 **This is NOT a traditional monorepo.** This system combines **TWO SEPARATE CODEBASES** (`/brainscraper` and `/scrapegoat`) into a unified process via Railway deployment. They communicate through Redis, not direct code imports.
 
-**NOTE:** Mission Alpha adds two new services (`/chimera-brain` and `/chimera-core`) that communicate via gRPC. The existing BrainScraper + Scrapegoat architecture remains intact and functional.
+**NOTE:** Mission Alpha adds two new services (`/chimera_brain` and `/chimera-core`) that communicate via gRPC. The existing BrainScraper + Scrapegoat architecture remains intact and functional.
 
 ### Architecture Overview
 
@@ -50,6 +54,7 @@ globs:
 │  │         Redis Bridge (Shared)              │              │
 │  │  Queue: leads_to_enrich                    │              │
 │  │  DLQ: failed_leads                         │              │
+│  │  Hive Mind: Vector Memory (Redis Stack)     │              │
 │  └─────────────────────────────────────────────┘              │
 │           │                             │                    │
 │           │                             │ BRPOP              │
@@ -61,6 +66,17 @@ globs:
 │  │      PostgreSQL (Shared Database)          │              │
 │  │      Table: leads                          │              │
 │  └─────────────────────────────────────────────┘              │
+│                                                               │
+│  ┌──────────────────┐         ┌──────────────────┐          │
+│  │  Chimera Brain   │◄────────┤  Chimera Core     │          │
+│  │  (Python 3.11)   │  gRPC   │  (Rust)          │          │
+│  │  HTTP: 8080      │         │  Worker Swarm     │          │
+│  │  gRPC: 50051     │         │  (Stealth)        │          │
+│  │  Root: /chimera_brain│     │  Root: /chimera-core│       │
+│  └────────┬─────────┘         └───────────────────┘          │
+│           │                                                    │
+│           │ Redis (Hive Mind)                                 │
+│           └───────────────────────────────────────────────────┘
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,27 +88,30 @@ globs:
 **Service:** BrainScraper.io (`/brainscraper`)
 **Location:** `brainscraper/app/components/LinkedInLeadGenerator.tsx` or `FacebookLeadGenerator.tsx`
 
-**Process:**
+**Process (Primary Path - In-Memory Enrichment):**
 1. User initiates search via Next.js UI (LinkedIn Sales Navigator or Facebook Discovery)
 2. System calls `premium_search_person` endpoint via RapidAPI
    - API: `https://realtime-linkedin-sales-navigator-data.p.rapidapi.com/premium_search_person`
    - Headers: `x-rapidapi-key`, `x-rapidapi-host`
    - Uses `RAPIDAPI_KEY` environment variable
 3. **Post-Filter Validation:** Ensures leads match exact requested location text before proceeding
-4. **Handover to Redis:** Executes `LPUSH` command to Redis queue `leads_to_enrich`
-   - Format: JSON string with `{ linkedinUrl, name, location, ... }`
-   - Redis connection: `REDIS_URL` environment variable (shared with scrapegoat)
+4. **In-Memory Enrichment:** User clicks "Enrich" → `enrichData()` function processes leads synchronously
+   - Calls skip-tracing APIs, Telnyx, USHA DNC, Census APIs
+   - Saves to `enriched-all-leads.json` via `/api/aggregate-enriched-leads`
+   - **Note:** BrainScraper does NOT push to Redis queue - it uses in-memory enrichment
 
 **Key Files:**
 - `brainscraper/app/components/LinkedInLeadGenerator.tsx` - LinkedIn scraping UI
 - `brainscraper/app/components/FacebookLeadGenerator.tsx` - Facebook discovery UI
-- `brainscraper/utils/scrapeUsageTracker.ts` - Track daily/monthly usage (NEW)
-- `brainscraper/utils/cooldownManager.ts` - Error spike detection (NEW)
+- `brainscraper/utils/enrichData.ts` - In-memory enrichment function
+- `brainscraper/app/api/aggregate-enriched-leads/route.ts` - Saves to JSON file
+- `brainscraper/utils/scrapeUsageTracker.ts` - Track daily/monthly usage
+- `brainscraper/utils/cooldownManager.ts` - Error spike detection
 
-**Integration Points:**
-- Before pushing to Redis, check: `checkScrapeLimit()`, `isInCooldown()`
-- After successful scrape, call: `incrementScrapeCount()`
-- On errors, call: `recordError()` for cooldown management
+**Alternative Path (Scrapegoat Queue-Based):**
+- Scrapegoat API endpoint `/worker/process-lead` can push to Redis queue `leads_to_enrich`
+- Scrapegoat workers consume from queue and save to PostgreSQL
+- This is a separate, alternative enrichment path
 
 ---
 
@@ -281,21 +300,15 @@ RAPIDAPI_KEY=your-key
 ## 🔗 CRITICAL INTEGRATION POINTS
 
 ### 1. Redis Queue Format
-**Producer (BrainScraper):**
-```typescript
-// In brainscraper (TypeScript)
-import redis from 'redis';
-const client = redis.createClient({ url: process.env.REDIS_URL });
+**Note:** BrainScraper does NOT push to Redis. It uses in-memory enrichment. Only Scrapegoat uses Redis queues.
 
-await client.lPush('leads_to_enrich', JSON.stringify({
-  linkedinUrl: lead.profileUrl,
-  name: lead.name,
-  location: lead.location,
-  title: lead.title,
-  company: lead.company,
-  platform: 'linkedin',
-  sourceDetails: { ... }
-}));
+**Producer (Scrapegoat API):**
+```python
+# File: scrapegoat/main.py
+@app.post("/worker/process-lead")
+async def process_lead(lead_data: Dict[str, Any]):
+    get_redis().lpush("leads_to_enrich", json.dumps(lead_data))
+    return {"status": "queued"}
 ```
 
 **Consumer (Scrapegoat):**
@@ -334,22 +347,19 @@ conn.commit()
 ```
 
 ### 3. BrainScraper Query Format
-**Read from PostgreSQL (BrainScraper):**
+**Read from File System (BrainScraper):**
 ```typescript
-// In brainscraper API route
-import { Pool } from 'pg';
+// File: brainscraper/app/api/load-enriched-results/route.ts
+// ACTUAL IMPLEMENTATION: Reads from file system, NOT PostgreSQL
+import { getDataFilePath, safeReadFile } from '@/utils/dataDirectory';
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-const result = await pool.query(`
-  SELECT * FROM leads 
-  WHERE age <= 59 
-    AND can_contact = true 
-    AND enriched_at IS NOT NULL
-  ORDER BY enriched_at DESC
-  LIMIT 10000
-`);
+const filePath = getDataFilePath('enriched-all-leads.json');
+const content = safeReadFile(filePath);
+const data = JSON.parse(content);
+// Returns leads from JSON file, not database
 ```
+
+**Note:** BrainScraper does NOT read from PostgreSQL. It reads from `enriched-all-leads.json` file.
 
 ---
 

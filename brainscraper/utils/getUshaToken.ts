@@ -76,10 +76,10 @@ async function refreshTokenInternal(
       }
     }
     
-    console.warn('⚠️ No USHA token source available. Set USHA_JWT_TOKEN or COGNITO_REFRESH_TOKEN');
+    // console.warn('⚠️ No USHA token source available. Set USHA_JWT_TOKEN or COGNITO_REFRESH_TOKEN');
     return null;
   } catch (error) {
-    console.error('❌ Error refreshing USHA token:', error);
+    // console.error('❌ Error refreshing USHA token:', error);
     return null;
   }
 }

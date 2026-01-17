@@ -1,0 +1,192 @@
+---
+description: "Triple-Vessel System Operations - Startup, Monitoring, and Maintenance"
+alwaysApply: true
+globs:
+  - "start-triple-vessel.sh"
+  - "docker-compose.yml"
+  - "*.toml"
+---
+
+# Triple-Vessel System Operations
+
+## 🚀 Starting the System
+
+**Primary Method:** Use the unified start script
+```bash
+# Local development
+LOCAL_MODE=true ./start-triple-vessel.sh
+
+# Verify Railway services
+./start-triple-vessel.sh
+```
+
+**Service Startup Order:**
+1. Infrastructure (Redis, PostgreSQL)
+2. Scrapegoat (depends on Redis/PostgreSQL)
+3. Chimera Brain (depends on Redis)
+4. Chimera Core (depends on Chimera Brain)
+5. BrainScraper (depends on Scrapegoat/Redis)
+
+**⚠️ CRITICAL:** Always use `start-triple-vessel.sh` - do not create new start scripts or modify startup procedures without updating this script.
+
+---
+
+## 📊 Service Status
+
+All services are deployed on Railway and should be online:
+
+| Service | Port | Status | Health Endpoint |
+|---------|------|--------|----------------|
+| **brainscraper** | 3000 | ✅ Online | Railway Dashboard |
+| **scrapegoat** | 8000 | ✅ Online | `/health` |
+| **chimera-brain-v1** | HTTP: 8080<br>gRPC: 50051 | ✅ Online | `/health` |
+| **chimera-core** | (worker) | ✅ Online | (no healthcheck) |
+| **Redis** | 6379 | ✅ Online | (infrastructure) |
+| **PostgreSQL** | 5432 | ✅ Online | (infrastructure) |
+
+---
+
+## 🔍 Monitoring
+
+### Check Service Health
+
+**Local:**
+```bash
+curl http://localhost:8000/health    # Scrapegoat
+curl http://localhost:8080/health    # Chimera Brain
+curl http://localhost:3000           # BrainScraper
+```
+
+**Railway:**
+```bash
+# View logs for a specific service
+railway logs --service <service-name> --tail 50
+
+# Check all services
+railway logs --service brainscraper --tail 50
+railway logs --service scrapegoat --tail 50
+railway logs --service chimera-brain-v1 --tail 50
+railway logs --service chimera-core --tail 50
+```
+
+### Service URLs (Railway)
+
+Update these in `start-triple-vessel.sh` or set as environment variables:
+- Scrapegoat: `http://scrapegoat-production.up.railway.app`
+- Chimera Brain: `http://chimera-brain-v1-production.up.railway.app`
+- BrainScraper: `http://brainscraper-production.up.railway.app`
+
+---
+
+## 🔧 Service Configuration
+
+### Railway Service Names
+
+- **brainscraper** - Next.js UI
+- **scrapegoat** - FastAPI enrichment service
+- **chimera-brain-v1** - Python gRPC server
+- **chimera-core** - Rust worker swarm
+
+### Root Directories (CRITICAL)
+
+Each service must have correct root directory in Railway:
+- **brainscraper** → Root: `brainscraper`
+- **scrapegoat** → Root: `scrapegoat`
+- **chimera-brain-v1** → Root: `chimera_brain` (underscore!)
+- **chimera-core** → Root: `chimera-core`
+
+---
+
+## ⚠️ Critical Operational Rules
+
+1. **Never modify `/brainscraper/app/api/` routes** unless explicitly requested
+2. **Always use `start-triple-vessel.sh`** for starting services (don't create new start scripts)
+3. **Services communicate via gRPC/Redis/PostgreSQL** - no direct code imports
+4. **Data protection rules apply** - never overwrite existing enriched leads
+5. **Service isolation is mandatory** - each service in its own directory
+6. **gRPC communication only** - use `@proto/chimera.proto` contract for cross-service communication
+
+---
+
+## 🐛 Troubleshooting
+
+### Service Won't Start
+
+1. **Check Railway Dashboard:**
+   - Verify service is not in "Build Failed" state
+   - Check Root Directory is correct
+   - Verify environment variables are set
+
+2. **Check Logs:**
+   ```bash
+   railway logs --service <service-name> --tail 100
+   ```
+
+3. **Verify Health:**
+   ```bash
+   curl <service-url>/health
+   ```
+
+### gRPC Connection Issues
+
+1. **Verify Chimera Brain is online:**
+   ```bash
+   curl http://chimera-brain-url/health
+   ```
+
+2. **Check internal DNS:**
+   - Chimera Core should connect to: `http://chimera-brain.railway.internal:50051`
+   - Verify `CHIMERA_BRAIN_ADDRESS` environment variable is set
+
+3. **Check logs for connection errors:**
+   ```bash
+   railway logs --service chimera-core --tail 50
+   railway logs --service chimera-brain-v1 --tail 50
+   ```
+
+### Port Conflicts (Local)
+
+```bash
+# Check what's using ports
+lsof -i :3000  # BrainScraper
+lsof -i :8000  # Scrapegoat
+lsof -i :8080  # Chimera Brain HTTP
+lsof -i :50051 # Chimera Brain gRPC
+```
+
+---
+
+## 📚 Quick Reference
+
+### Key Files
+
+- **Start Script:** `start-triple-vessel.sh`
+- **Docker Compose:** `docker-compose.yml` (local only)
+- **Proto Contract:** `@proto/chimera.proto`
+- **Railway Configs:** `*/railway.toml`
+
+### Key Commands
+
+```bash
+# Start system
+LOCAL_MODE=true ./start-triple-vessel.sh
+
+# Monitor services
+railway logs --service <name> --tail 50
+
+# Open Railway dashboard
+railway open
+
+# Check service status
+railway status
+```
+
+---
+
+## 🎯 Remember
+
+- **This is a distributed system** - services communicate via protocols, not code imports
+- **Isolation is critical** - each service must be independently deployable
+- **Use the start script** - don't create new startup procedures
+- **Check Railway dashboard** - for deployment status and logs
+- **Respect service boundaries** - never mix code between services

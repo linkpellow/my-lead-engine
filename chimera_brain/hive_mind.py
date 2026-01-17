@@ -19,7 +19,7 @@ Result: The swarm gets smarter with every request.
 import json
 import numpy as np
 from typing import Optional, Dict, Any, List
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
 import redis
 from redis.commands.search.field import VectorField, TextField
 # Handle version differences: redis-py 5.0.1 uses indexDefinition (camelCase)
@@ -161,6 +161,78 @@ class HiveMind:
         except Exception as e:
             logger.warning(f"Hive Mind query failed (non-fatal): {e}")
             return None
+    
+    def semantic_search(
+        self,
+        query_text: str,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform semantic search on the Hive Mind using query text.
+        
+        This allows general queries like "how to login to LinkedIn" to find
+        relevant past experiences.
+        
+        Args:
+            query_text: Natural language query
+            top_k: Number of results to return
+        
+        Returns:
+            List of MemoryResult dicts with action_plan, similarity, and metadata
+        """
+        try:
+            # Generate embedding for query text
+            query_embedding = self.embedding_model.encode(query_text, convert_to_numpy=True)
+            
+            # Search for similar experiences (KNN with cosine distance)
+            query = (
+                Query(f"*=>[KNN {top_k} @vector $blob AS score]")
+                .return_field("action_plan")
+                .return_field("ax_tree_summary")
+                .return_field("screenshot_hash")
+                .return_field("score")
+                .sort_by("score")
+                .dialect(2)
+            )
+            
+            result = self.redis.ft("experiences").search(
+                query,
+                query_params={"blob": query_embedding.astype(np.float32).tobytes()}
+            )
+            
+            # Convert results to MemoryResult format
+            results = []
+            for doc in result.docs:
+                score = float(doc.score)
+                similarity = 1.0 - score  # Convert distance to similarity (cosine)
+                
+                # Only include results with reasonable similarity (> 0.7)
+                if similarity > 0.7:
+                    try:
+                        action_plan = json.loads(doc.action_plan) if doc.action_plan else {}
+                    except:
+                        action_plan = {}
+                    
+                    results.append({
+                        'text': doc.ax_tree_summary or query_text,
+                        'similarity': similarity,
+                        'metadata': {
+                            'screenshot_hash': doc.screenshot_hash or '',
+                            'ax_tree_summary': doc.ax_tree_summary or ''
+                        },
+                        'action_plan': action_plan
+                    })
+            
+            if results:
+                logger.info(f"🧠 HIVE MIND: Found {len(results)} relevant experiences for query: '{query_text[:50]}...'")
+            else:
+                logger.debug(f"Hive Mind: No relevant experiences found for query: '{query_text[:50]}...'")
+            
+            return results
+            
+        except Exception as e:
+            logger.warning(f"Hive Mind semantic search failed (non-fatal): {e}")
+            return []
     
     def store_experience(
         self,

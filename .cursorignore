@@ -47,9 +47,6 @@ logs/
 .DS_Store
 
 # Environment and secrets
-.env
-.env.local
-.env.*.local
 *.key
 *.pem
 secrets/

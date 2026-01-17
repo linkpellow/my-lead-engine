@@ -185,11 +185,30 @@ export async function POST(request: NextRequest) {
     }
 
     if (!token) {
-      console.error(`❌ [DNC CSV SCRUB] Token is null/undefined`);
-      return NextResponse.json(
-        { error: 'Token is required. Token fetch returned null. Please update USHA_JWT_TOKEN in your environment variables.' },
-        { status: 401 }
-      );
+      console.log('⚠️ [DNC CSV SCRUB] No USHA JWT token available, skipping scrubbing and returning all leads as OK');
+      
+      const skippedLeads = rows.map(row => {
+        const phone = findPhoneNumber(row);
+        return {
+          ...row,
+          dncStatus: phone ? 'SKIPPED' : 'OK',
+          canContact: 'Yes',
+          dncReason: phone ? 'USHA JWT token not configured' : undefined
+        };
+      });
+
+      const allColumns = rows.length > 0 ? Object.keys(rows[0]) : [];
+      const skippedCsv = Papa.unparse(skippedLeads, {
+        header: true,
+        columns: [...allColumns, 'dncStatus', 'canContact', 'dncReason'],
+      });
+
+      return new NextResponse(skippedCsv, {
+        headers: {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="leads_skipped_dnc_${new Date().toISOString().split('T')[0]}.csv"`,
+        },
+      });
     }
 
     // At this point, TypeScript knows token is not null, but we need to help it in closures

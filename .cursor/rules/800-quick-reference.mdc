@@ -1,0 +1,162 @@
+---
+description: "Quick Reference Card - Critical Information at a Glance"
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+# Quick Reference Card
+
+## 🚨 Critical Facts (Never Forget)
+
+### Directory Names
+- ✅ `chimera_brain` (underscore) - NOT `chimera-brain`
+- ✅ `chimera-core` (hyphen) - NOT `chimera_core`
+- ✅ `brainscraper` (no hyphen/underscore)
+- ✅ `scrapegoat` (no hyphen/underscore)
+
+### Service Communication
+- **BrainScraper:** In-memory enrichment → `enriched-all-leads.json` (file system)
+- **Scrapegoat:** Redis Queue (`leads_to_enrich`) → PostgreSQL (alternative path)
+- **Chimera Core ↔ Chimera Brain:** gRPC (`chimera-brain.railway.internal:50051`)
+- **Scrapegoat → PostgreSQL:** SQL (queue-based enrichment path)
+- **Chimera Brain → Redis:** Hive Mind (Redis Stack, not standard Redis)
+
+### Ports
+| Service | HTTP | gRPC | Notes |
+|---------|------|------|-------|
+| brainscraper | 3000 | - | Next.js |
+| scrapegoat | 8000 | - | FastAPI |
+| chimera-brain-v1 | 8080 | 50051 | Dual port! |
+| chimera-core | - | - | Worker only |
+
+---
+
+## 🎯 Decision Tree (30 Seconds)
+
+**"Where do I make this change?"**
+
+```
+Need to modify...
+├─ Lead discovery UI? → brainscraper/app/components/
+├─ API endpoint? → brainscraper/app/api/ OR scrapegoat/main.py
+├─ Enrichment logic? → scrapegoat/app/workers/
+├─ Vision processing? → chimera_brain/vision_service.py
+├─ Browser automation? → chimera-core/src/stealth.rs
+├─ Service communication? → @proto/chimera.proto (update contract first!)
+└─ Database schema? → PostgreSQL migration
+```
+
+---
+
+## 🔄 Data Flow (Quick)
+
+```
+Lead Discovery (Two Paths):
+  Path A: User → BrainScraper → In-Memory Enrichment → enriched-all-leads.json → BrainScraper UI
+  Path B: API → Scrapegoat → Redis Queue → Scrapegoat Worker → PostgreSQL → BrainScraper UI
+
+Vision Processing:
+  Chimera Core → gRPC → Chimera Brain → VLM → Coordinates → Chimera Core
+
+Memory Query:
+  Chimera Core → gRPC → Chimera Brain → Redis Stack → Results → Chimera Core
+```
+
+---
+
+## ⚠️ Common Mistakes
+
+1. ❌ Using `chimera-brain` instead of `chimera_brain` (directory)
+2. ❌ Mixing code between services (imports)
+3. ❌ Using HTTP instead of gRPC for Chimera services
+4. ❌ Using standard Redis instead of Redis Stack for Hive Mind
+5. ❌ Modifying `/brainscraper/app/api/` without permission
+6. ❌ Overwriting enriched leads (always merge!)
+7. ❌ Creating new start scripts (use `start-triple-vessel.sh`)
+
+---
+
+## 📁 Key Files
+
+| Purpose | File |
+|---------|------|
+| Start system | `start-triple-vessel.sh` |
+| gRPC contract | `@proto/chimera.proto` |
+| Local dev | `docker-compose.yml` |
+| Lead discovery | `brainscraper/app/components/LinkedInLeadGenerator.tsx` |
+| Enrichment worker | `scrapegoat/start_redis_worker.py` |
+| Vision service | `chimera_brain/vision_service.py` |
+| Stealth logic | `chimera-core/src/stealth.rs` |
+
+---
+
+## 🔧 Quick Commands
+
+```bash
+# Start everything
+LOCAL_MODE=true ./start-triple-vessel.sh
+
+# Check health
+curl http://localhost:8000/health
+curl http://localhost:8080/health
+
+# Check queue
+redis-cli LLEN leads_to_enrich
+
+# Check database
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM leads;"
+
+# View logs
+railway logs --service <name> --tail 50
+docker-compose logs -f
+```
+
+---
+
+## 🎯 Two Systems (Don't Mix!)
+
+**System 1: Lead Enrichment (Two Paths)**
+- **Path A:** BrainScraper → In-Memory Enrichment → `enriched-all-leads.json` (primary)
+- **Path B:** Scrapegoat API → Redis Queue → Scrapegoat Worker → PostgreSQL (alternative)
+- Both paths coexist but are independent
+
+**System 2: Chimera AI**
+- Chimera Brain + Chimera Core
+- gRPC + Redis Stack
+- For vision processing and browser automation
+
+**Rule:** These coexist but don't directly interact!
+
+---
+
+## 📚 Full Documentation
+
+- **Architecture:** `.cursor/rules/000-mission-alpha.mdc`
+- **Operations:** `.cursor/rules/500-system-operations.mdc`
+- **Relationships:** `.cursor/rules/600-component-relationships.mdc`
+- **Testing:** `.cursor/rules/700-testing-verification.mdc`
+
+---
+
+## 🚨 Emergency Checklist
+
+If something breaks:
+
+1. ✅ Check service health: `curl <service>/health`
+2. ✅ Check logs: `railway logs` or `docker-compose logs`
+3. ✅ Verify environment variables are set
+4. ✅ Check root directories in Railway dashboard
+5. ✅ Verify ports aren't conflicting
+6. ✅ Check service dependencies (Redis, PostgreSQL)
+7. ✅ Verify proto files are generated (for gRPC)
+
+---
+
+## 💡 Remember
+
+- **Isolation is critical** - services don't import each other
+- **Protocols matter** - Redis for enrichment, gRPC for Chimera
+- **Directory names matter** - underscores vs hyphens
+- **Data protection** - never overwrite enriched leads
+- **Use the start script** - don't create new ones

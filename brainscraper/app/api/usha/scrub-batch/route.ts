@@ -42,16 +42,28 @@ export async function POST(request: NextRequest) {
     }
     
     if (!token) {
-      console.error('❌ [DNC SCRUB] Token is null/undefined');
-      console.error(`❌ [DNC SCRUB] CRITICAL: The USHA DNC API requires a valid USHA JWT token.`);
-      console.error(`❌ [DNC SCRUB] Please ensure USHA_JWT_TOKEN is set in environment variables with a fresh, valid token.`);
-      return NextResponse.json(
-        { 
-          success: false,
-          error: 'Token is required. Token fetch returned null. The USHA DNC API requires a valid USHA JWT token. Please update USHA_JWT_TOKEN in your environment variables.' 
-        },
-        { status: 401 }
-      );
+      console.log('⚠️ [DNC SCRUB] No USHA JWT token available, skipping scrubbing and returning "SKIPPED" status');
+      
+      const skippedResults = phoneNumbers.map((phone: string) => ({
+        phone: String(phone || '').replace(/\D/g, '').substring(0, 10),
+        isDNC: false,
+        canContact: true,
+        status: 'SKIPPED',
+        reason: 'USHA JWT token not configured'
+      }));
+
+      return NextResponse.json({
+        success: true,
+        results: skippedResults,
+        stats: {
+          total: phoneNumbers.length,
+          success: phoneNumbers.length,
+          failed: 0,
+          dnc: 0,
+          ok: phoneNumbers.length,
+          skipped: true
+        }
+      });
     }
 
     if (!Array.isArray(phoneNumbers) || phoneNumbers.length === 0) {

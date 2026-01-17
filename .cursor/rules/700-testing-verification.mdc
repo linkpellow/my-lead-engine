@@ -1,0 +1,396 @@
+---
+description: "Testing and Verification Procedures - How to Verify Each Component Works"
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+# Testing & Verification Guide
+
+## 🧪 System Verification Checklist
+
+Use this guide to verify each component is working correctly during testing.
+
+---
+
+## ✅ Phase 1: Infrastructure Verification
+
+### Redis (Queue Bridge)
+
+**Local:**
+```bash
+redis-cli ping
+# Should return: PONG
+
+redis-cli LLEN leads_to_enrich
+# Should return: 0 (or current queue length)
+```
+
+**Railway:**
+```bash
+railway logs --service redis-bridge --tail 20
+# Should show Redis server running
+```
+
+**Verify Queue Operations:**
+```bash
+# Test LPUSH (from BrainScraper)
+redis-cli LPUSH leads_to_enrich '{"linkedinUrl":"test","name":"Test User"}'
+
+# Test BRPOP (from Scrapegoat)
+redis-cli BRPOP leads_to_enrich 5
+# Should return the test message
+```
+
+---
+
+### PostgreSQL (Database)
+
+**Local:**
+```bash
+psql $DATABASE_URL -c "SELECT version();"
+# Should return PostgreSQL version
+
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM leads;"
+# Should return current lead count
+```
+
+**Railway:**
+```bash
+railway logs --service PostgreSQL --tail 20
+# Should show PostgreSQL running
+```
+
+**Verify Schema:**
+```bash
+psql $DATABASE_URL -c "\d leads"
+# Should show leads table structure
+```
+
+---
+
+## ✅ Phase 2: Service Health Checks
+
+### BrainScraper
+
+**Local:**
+```bash
+curl http://localhost:3000/api/health
+# Should return: {"status":"ok"} or similar
+```
+
+**Railway:**
+```bash
+curl https://brainscraper-production.up.railway.app/api/health
+# Or check Railway dashboard
+```
+
+**Verify UI:**
+- Open `http://localhost:3000` (local) or Railway URL
+- Should see Next.js UI loading
+- Check browser console for errors
+
+---
+
+### Scrapegoat
+
+**Local:**
+```bash
+curl http://localhost:8000/health
+# Should return: {"status":"healthy"}
+```
+
+**Railway:**
+```bash
+curl https://scrapegoat-production.up.railway.app/health
+# Or check Railway dashboard
+```
+
+**Verify API:**
+```bash
+curl http://localhost:8000/api/queue/status
+# Should return queue statistics
+```
+
+---
+
+### Chimera Brain
+
+**Local:**
+```bash
+curl http://localhost:8080/health
+# Should return: {"status":"healthy","service":"chimera-brain"}
+```
+
+**Railway:**
+```bash
+curl https://chimera-brain-v1-production.up.railway.app/health
+# Or check Railway dashboard
+```
+
+**Verify gRPC:**
+```bash
+# Check logs for gRPC server startup
+# Should see: "🧠 Starting The Brain gRPC server on [::]:50051"
+```
+
+---
+
+### Chimera Core
+
+**Local:**
+```bash
+# Check if process is running
+ps aux | grep chimera-worker
+
+# Check logs
+tail -f /tmp/chimera-core.log
+# Should see: "✅ Connected to The Brain"
+```
+
+**Railway:**
+```bash
+railway logs --service chimera-core --tail 50
+# Should show connection to Brain and worker status
+```
+
+---
+
+## ✅ Phase 3: Integration Testing
+
+### Test 1: Lead Discovery → Enrichment Flow
+
+**Steps:**
+1. Start all services: `LOCAL_MODE=true ./start-triple-vessel.sh`
+2. Open BrainScraper UI: `http://localhost:3000`
+3. Use LinkedIn Lead Generator to search for leads
+4. Verify leads appear in UI
+5. Check Redis queue: `redis-cli LLEN leads_to_enrich`
+6. Verify Scrapegoat worker is processing: `docker-compose logs scrapegoat-worker --tail 20`
+7. Check PostgreSQL: `psql $DATABASE_URL -c "SELECT * FROM leads LIMIT 5;"`
+8. Verify enriched leads appear in `/enriched` page
+
+**Expected Results:**
+- ✅ Leads discovered and displayed
+- ✅ Queue length increases
+- ✅ Worker logs show processing
+- ✅ Leads appear in PostgreSQL
+- ✅ Enriched leads visible in UI
+
+---
+
+### Test 2: Chimera Vision Processing
+
+**Steps:**
+1. Start Chimera Brain: `cd chimera_brain && python server.py`
+2. Start Chimera Core: `cd chimera-core && cargo run`
+3. Verify connection in logs: `✅ Connected to The Brain`
+4. Trigger vision processing (if implemented in Core)
+5. Check Brain logs for `ProcessVision` calls
+6. Verify response received in Core logs
+
+**Expected Results:**
+- ✅ Core connects to Brain
+- ✅ Vision requests sent via gRPC
+- ✅ Brain processes and returns coordinates
+- ✅ Core receives and uses response
+
+---
+
+### Test 3: Hive Mind Memory
+
+**Steps:**
+1. Ensure Redis Stack is running (not standard Redis)
+2. Start Chimera Brain with Redis Stack URL
+3. Verify index creation: Check logs for "Hive Mind index created"
+4. Store a memory via gRPC (if implemented)
+5. Query memory via gRPC
+6. Verify results returned
+
+**Expected Results:**
+- ✅ Redis Stack connection successful
+- ✅ Vector index created
+- ✅ Memory stored and retrievable
+- ✅ Similarity search works
+
+---
+
+## 🔍 Troubleshooting Tests
+
+### Service Won't Start
+
+**Check:**
+1. Port conflicts: `lsof -i :PORT`
+2. Dependencies installed: `npm install`, `pip install -r requirements.txt`, `cargo build`
+3. Environment variables: `echo $VARIABLE_NAME`
+4. Logs: Check service-specific logs
+
+---
+
+### Redis Connection Fails
+
+**Check:**
+1. Redis is running: `redis-cli ping`
+2. URL is correct: `echo $REDIS_URL`
+3. Network connectivity: `telnet localhost 6379` (local)
+4. Railway internal DNS: `chimera-brain.railway.internal:6379` (Railway)
+
+---
+
+### gRPC Connection Fails
+
+**Check:**
+1. Chimera Brain is running: `curl http://localhost:8080/health`
+2. gRPC port is listening: `lsof -i :50051`
+3. Internal DNS resolves: `chimera-brain.railway.internal` (Railway)
+4. Proto files generated: `ls chimera_brain/proto/*.py`
+5. Environment variable: `echo $CHIMERA_BRAIN_ADDRESS`
+
+---
+
+### PostgreSQL Connection Fails
+
+**Check:**
+1. Database is running: `psql $DATABASE_URL -c "SELECT 1;"`
+2. URL is correct: `echo $DATABASE_URL`
+3. Schema exists: `psql $DATABASE_URL -c "\dt"`
+4. Permissions: Verify user has INSERT/SELECT permissions
+
+---
+
+## 📊 Monitoring During Testing
+
+### Key Metrics to Watch
+
+**Redis Queue:**
+```bash
+# Queue length
+redis-cli LLEN leads_to_enrich
+
+# Failed leads
+redis-cli LLEN failed_leads
+
+# Processing rate
+watch -n 1 'redis-cli LLEN leads_to_enrich'
+```
+
+**PostgreSQL:**
+```bash
+# Lead count
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM leads;"
+
+# Recent enrichments
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM leads WHERE enriched_at > NOW() - INTERVAL '1 hour';"
+```
+
+**Service Logs:**
+```bash
+# BrainScraper
+docker-compose logs brainscraper --tail 50 -f
+
+# Scrapegoat
+docker-compose logs scrapegoat --tail 50 -f
+
+# Chimera Brain
+tail -f /tmp/chimera-brain.log
+
+# Chimera Core
+tail -f /tmp/chimera-core.log
+```
+
+---
+
+## ✅ Success Criteria
+
+**System is working correctly when:**
+
+1. ✅ All services start without errors
+2. ✅ Health checks return 200 OK
+3. ✅ Redis queue operations work (LPUSH/BRPOP)
+4. ✅ PostgreSQL reads/writes succeed
+5. ✅ Lead discovery → enrichment → storage flow works end-to-end
+6. ✅ Chimera Core connects to Chimera Brain via gRPC
+7. ✅ Vision processing requests are handled
+8. ✅ Hive Mind memory operations work (if Redis Stack configured)
+9. ✅ No service crashes or connection errors
+10. ✅ Enriched leads appear in UI
+
+---
+
+## 🚨 Common Test Failures
+
+### "Service unavailable" Healthcheck
+
+**Cause:** Service not binding to correct interface  
+**Fix:** Ensure services bind to `0.0.0.0` (not `127.0.0.1` or `::`)
+
+### "Connection refused" gRPC
+
+**Cause:** Chimera Brain not running or wrong address  
+**Fix:** Verify Brain is running and `CHIMERA_BRAIN_ADDRESS` is correct
+
+### "Module not found" errors
+
+**Cause:** Dependencies not installed  
+**Fix:** Run `npm install`, `pip install -r requirements.txt`, or `cargo build`
+
+### "Queue not processing"
+
+**Cause:** Worker not running or Redis connection issue  
+**Fix:** Check worker logs and Redis connectivity
+
+---
+
+## 📝 Test Log Template
+
+When testing, document:
+
+```
+Date: [DATE]
+Test: [TEST NAME]
+Services: [LIST SERVICES TESTED]
+
+Results:
+- ✅/❌ Service 1: [RESULT]
+- ✅/❌ Service 2: [RESULT]
+- ✅/❌ Integration: [RESULT]
+
+Issues Found:
+- [ISSUE 1]
+- [ISSUE 2]
+
+Resolution:
+- [HOW ISSUES WERE FIXED]
+```
+
+---
+
+## 🎯 Quick Test Commands
+
+```bash
+# Full system test
+LOCAL_MODE=true ./start-triple-vessel.sh
+
+# Check all health endpoints
+curl http://localhost:3000/api/health
+curl http://localhost:8000/health
+curl http://localhost:8080/health
+
+# Verify queue
+redis-cli LLEN leads_to_enrich
+
+# Check database
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM leads;"
+
+# Monitor logs
+docker-compose logs -f
+```
+
+---
+
+## 🎯 Remember
+
+**Testing is iterative:** Start with infrastructure, then services, then integrations.  
+**Check logs first:** Most issues are visible in service logs.  
+**Verify end-to-end:** Individual services working ≠ system working together.  
+**Document failures:** Helps identify patterns and prevent future issues.

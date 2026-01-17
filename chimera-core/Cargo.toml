@@ -9,6 +9,8 @@ authors = ["Mission Alpha Team"]
 # gRPC & Protocol Buffers
 tonic = "0.12"
 prost = "0.13"
+tower = "0.4"
+tower-service = "0.3"
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -31,6 +33,9 @@ rand = "0.8"
 
 # Noise for diffusion-based paths
 noise = "0.9"
+
+# Browser automation
+fantoccini = "0.21.0"
 
 [build-dependencies]
 tonic-build = "0.12"
