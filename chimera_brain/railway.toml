@@ -1,7 +1,8 @@
 [build]
 builder = "NIXPACKS"
 # Using Nixpacks - Dockerfile removed from git
-# Nixpacks auto-detects Python and installs from requirements.txt
+# Generate proto files during build (required for gRPC)
+buildCommand = "pip install -r requirements.txt && chmod +x generate_proto.sh && ./generate_proto.sh"
 
 [deploy]
 startCommand = "PYTHONPATH=. python server.py"
