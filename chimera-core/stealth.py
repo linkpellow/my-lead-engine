@@ -118,15 +118,51 @@ def generate_stealth_script(profile: DeviceProfile, fingerprint: FingerprintConf
         // 2026 STEALTH PATCHES - Full Fingerprint Spoofing
         // ============================================
         
-        // 1. Navigator patches (CRITICAL: Remove webdriver)
-        Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
-        Object.defineProperty(navigator, 'platform', {{ get: () => '{profile.platform}' }});
-        Object.defineProperty(navigator, 'vendor', {{ get: () => '{profile.vendor}' }});
-        Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {profile.hardware_concurrency} }});
-        Object.defineProperty(navigator, 'deviceMemory', {{ get: () => {profile.device_memory} }});
-        Object.defineProperty(navigator, 'maxTouchPoints', {{ get: () => {profile.max_touch_points} }});
-        Object.defineProperty(navigator, 'languages', {{ get: () => {json.dumps(fingerprint.languages)} }});
-        Object.defineProperty(navigator, 'language', {{ get: () => '{fingerprint.language}' }});
+        // 1. Navigator patches (CRITICAL: Remove webdriver with IMMUTABLE lock)
+        Object.defineProperty(navigator, 'webdriver', {{ 
+            get: () => undefined,
+            configurable: false,
+            enumerable: false
+        }});
+        
+        // IMMUTABLE LOCKDOWN: Prevent CreepJS from probing past our spoofing
+        Object.defineProperty(navigator, 'platform', {{ 
+            get: () => '{profile.platform}',
+            configurable: false,
+            writable: false
+        }});
+        Object.defineProperty(navigator, 'vendor', {{ 
+            get: () => '{profile.vendor}',
+            configurable: false,
+            writable: false
+        }});
+        Object.defineProperty(navigator, 'hardwareConcurrency', {{ 
+            get: () => {profile.hardware_concurrency},
+            configurable: false,
+            writable: false
+        }});
+        Object.defineProperty(navigator, 'deviceMemory', {{ 
+            get: () => {profile.device_memory},
+            configurable: false,
+            writable: false
+        }});
+        Object.defineProperty(navigator, 'maxTouchPoints', {{ 
+            get: () => {profile.max_touch_points},
+            configurable: false,
+            writable: false
+        }});
+        
+        // IMMUTABLE: Lock languages array
+        Object.defineProperty(navigator, 'languages', {{ 
+            get: () => {json.dumps(fingerprint.languages)},
+            configurable: false,
+            writable: false
+        }});
+        Object.defineProperty(navigator, 'language', {{ 
+            get: () => '{fingerprint.language}',
+            configurable: false,
+            writable: false
+        }});
         
         // 2. Chrome object (Chrome-specific)
         window.chrome = {{

@@ -360,16 +360,24 @@ async def validate_creepjs(page: Page, timeout: int = 30000) -> Dict[str, Any]:
             except Exception as e:
                 logger.error(f"   Failed to dump fingerprint: {e}")
         
+        # FORCED NUMERICAL RESULT: Must return a numerical score
+        # If still None, something is critically wrong
+        if trust_score is None:
+            logger.critical("   CRITICAL: Trust score extraction completely failed - returning 0.0")
+            trust_score = 0.0
+            is_human = False
+        
         # Log results
-        if is_human and trust_score and trust_score > 0:
+        if is_human and trust_score >= 100.0:
             logger.info(f"✅ CreepJS Trust Score: {trust_score}% - HUMAN")
+            logger.info("🚀 Ready to achieve 100% Human trust score on CreepJS")
         else:
-            score_display = f"{trust_score}%" if trust_score and trust_score > 0 else "None%"
-            logger.critical(f"❌ CreepJS Trust Score: {score_display} - NOT HUMAN")
+            logger.critical(f"❌ CreepJS Trust Score: {trust_score}% - NOT HUMAN")
             logger.critical("   CRITICAL: Stealth implementation failed validation!")
+            logger.critical(f"   Expected: 100.0%, Got: {trust_score}%")
         
         return {
-            "trust_score": trust_score if trust_score else 0.0,
+            "trust_score": float(trust_score),  # Force to float
             "is_human": is_human,
             "fingerprint_details": fingerprint_details,
         }
