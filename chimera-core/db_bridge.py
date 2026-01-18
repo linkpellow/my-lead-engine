@@ -150,6 +150,127 @@ def ensure_mission_results_table(conn):
         conn.rollback()
 
 
+def log_selector_repair(
+    worker_id: str,
+    original_selector: str,
+    new_selector: str,
+    method: str = "isomorphic",
+    confidence: float = 0.85,
+    intent: Optional[str] = None
+) -> bool:
+    """
+    Log selector repair to PostgreSQL.
+    
+    Records self-healing selector repairs for future reference.
+    
+    Args:
+        worker_id: Worker identifier
+        original_selector: The selector that failed
+        new_selector: The repaired selector
+        method: Repair method (e.g., "isomorphic", "id-fallback")
+        confidence: Confidence score (0.0-1.0)
+        intent: Intent description (e.g., "click login button")
+    
+    Returns:
+        True if logged successfully, False otherwise
+    """
+    if not DATABASE_URL:
+        logger.debug("⚠️ DATABASE_URL not set - skipping selector repair log")
+        return False
+    
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        ensure_selector_repairs_table(conn)
+        
+        cur = conn.cursor()
+        
+        # Insert selector repair
+        cur.execute("""
+            INSERT INTO selector_repairs (
+                worker_id,
+                original_selector,
+                new_selector,
+                repair_method,
+                confidence,
+                intent,
+                created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+        """, (
+            worker_id,
+            original_selector,
+            new_selector,
+            method,
+            confidence,
+            intent
+        ))
+        
+        conn.commit()
+        cur.close()
+        return_db_connection(conn)
+        
+        logger.info(f"✅ Selector self-healed and updated in Postgres")
+        logger.debug(f"   Original: {original_selector}")
+        logger.debug(f"   New: {new_selector} (method: {method}, confidence: {confidence})")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to log selector repair: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+            return_db_connection(conn)
+        return False
+
+
+def ensure_selector_repairs_table(conn):
+    """
+    Ensure selector_repairs table exists.
+    
+    Args:
+        conn: PostgreSQL connection
+    """
+    try:
+        cur = conn.cursor()
+        
+        # Create selector_repairs table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS selector_repairs (
+                id SERIAL PRIMARY KEY,
+                worker_id VARCHAR(100) NOT NULL,
+                original_selector TEXT NOT NULL,
+                new_selector TEXT NOT NULL,
+                repair_method VARCHAR(50) DEFAULT 'isomorphic',
+                confidence FLOAT DEFAULT 0.85,
+                intent VARCHAR(255),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        # Create indexes
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_selector_repairs_worker_id 
+            ON selector_repairs(worker_id)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_selector_repairs_created_at 
+            ON selector_repairs(created_at)
+        """)
+        
+        conn.commit()
+        cur.close()
+        logger.debug("✅ selector_repairs table verified")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to create selector_repairs table: {e}")
+        conn.rollback()
+
+
 def record_stealth_check(
     worker_id: str,
     score: float,

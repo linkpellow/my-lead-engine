@@ -8,7 +8,8 @@ import os
 import asyncio
 import logging
 from typing import Optional, Dict, Any
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from pathlib import Path
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 
 from stealth import (
     get_stealth_launch_args,
@@ -112,6 +113,10 @@ class PhantomWorker:
         await apply_stealth_patches(self._page, self.device_profile, self.fingerprint)
         logger.info("✅ Stealth patches applied")
         
+        # Phase 3: Inject Isomorphic Intelligence (Self-Healing selectors)
+        await self._inject_isomorphic_intelligence()
+        logger.info("✅ Isomorphic intelligence injected")
+        
         # Connect to The Brain via gRPC
         if GRPC_AVAILABLE:
             await self._connect_to_brain()
@@ -121,6 +126,41 @@ class PhantomWorker:
         logger.info(f"✅ PhantomWorker {self.worker_id} ready")
         logger.info("   - Browser: Chromium with stealth")
         logger.info("   - Brain Connection: " + ("Connected" if self._brain_client else "Not available"))
+    
+    async def _inject_isomorphic_intelligence(self) -> None:
+        """
+        Inject isomorphic intelligence tools into browser context.
+        
+        Makes selectorParser, cssParser, and locatorGenerators available
+        in window.isomorphic for self-healing selector repair.
+        """
+        isomorphic_dir = Path(__file__).parent / "isomorphic"
+        
+        # Load JavaScript files
+        js_files = [
+            "selectorParser.js",
+            "cssParser.js",
+            "locatorGenerators.js"
+        ]
+        
+        combined_script = "// Isomorphic Intelligence Layer - Self-Healing Selectors\n"
+        
+        for js_file in js_files:
+            js_path = isomorphic_dir / js_file
+            if js_path.exists():
+                try:
+                    with open(js_path, 'r') as f:
+                        combined_script += f"\n// === {js_file} ===\n"
+                        combined_script += f.read()
+                        combined_script += "\n"
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load {js_file}: {e}")
+            else:
+                logger.warning(f"⚠️ Isomorphic file not found: {js_path}")
+        
+        # Inject into browser before any page loads
+        await self._page.add_init_script(combined_script)
+        logger.debug("✅ Isomorphic intelligence scripts injected into browser context")
     
     async def _connect_to_brain(self) -> None:
         """Connect to The Brain via gRPC"""
@@ -141,6 +181,119 @@ class PhantomWorker:
         except Exception as e:
             logger.error(f"❌ Failed to connect to The Brain: {e}")
             self._brain_client = None
+    
+    async def _self_heal_selector(
+        self,
+        failed_selector: str,
+        intent: str = "element_interaction"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Self-heal a broken selector using isomorphic intelligence.
+        
+        Args:
+            failed_selector: The selector that failed
+            intent: Intent description (e.g., "click login button")
+        
+        Returns:
+            Dict with new_selector, confidence, and method, or None if healing failed
+        """
+        try:
+            # Use injected isomorphic tools to find alternative selector
+            result = await self._page.evaluate("""
+                (failedSelector, intent) => {
+                    if (!window.isomorphic || !window.isomorphic.locatorGenerators) {
+                        return null;
+                    }
+                    
+                    // Try to find element using multiple strategies
+                    const found = window.isomorphic.locatorGenerators.findElementByStrategies(
+                        failedSelector,
+                        document
+                    );
+                    
+                    if (found && found.element) {
+                        // Generate resilient selector for found element
+                        const newSelector = window.isomorphic.locatorGenerators.generateResilientSelector(
+                            found.element,
+                            { strategies: ['id', 'data-attr', 'class', 'tag'] }
+                        );
+                        
+                        return {
+                            newSelector: newSelector || found.selector,
+                            method: found.method,
+                            confidence: 0.85,
+                            elementInfo: window.isomorphic.selectorParser.extractIdentifiers(found.element)
+                        };
+                    }
+                    
+                    return null;
+                }
+            """, failed_selector, intent)
+            
+            if result and result.get('newSelector'):
+                logger.info(f"✅ Selector self-healed: {failed_selector} → {result['newSelector']}")
+                logger.info(f"   Method: {result['method']}, Confidence: {result.get('confidence', 0.85)}")
+                return result
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Self-healing failed: {e}")
+            return None
+    
+    async def safe_click(
+        self,
+        selector: str,
+        timeout: int = 30000,
+        intent: str = "click_element"
+    ) -> bool:
+        """
+        Safely click element with self-healing on failure.
+        
+        Args:
+            selector: CSS selector
+            timeout: Timeout in milliseconds
+            intent: Intent description for self-healing
+        
+        Returns:
+            True if click succeeded, False otherwise
+        """
+        try:
+            await self._page.click(selector, timeout=timeout)
+            return True
+        except PlaywrightTimeoutError:
+            logger.warning(f"⚠️ Selector timeout: {selector}")
+            logger.info(f"   Attempting self-healing for intent: {intent}")
+            
+            # Attempt self-healing
+            healed = await self._self_heal_selector(selector, intent)
+            if healed and healed.get('newSelector'):
+                try:
+                    # Try new selector
+                    await self._page.click(healed['newSelector'], timeout=timeout)
+                    
+                    # Log repair to PostgreSQL
+                    from db_bridge import log_selector_repair
+                    log_selector_repair(
+                        worker_id=self.worker_id,
+                        original_selector=selector,
+                        new_selector=healed['newSelector'],
+                        method=healed.get('method', 'isomorphic'),
+                        confidence=healed.get('confidence', 0.85),
+                        intent=intent
+                    )
+                    
+                    logger.info(f"✅ Selector self-healed and updated in Postgres")
+                    return True
+                except Exception as e:
+                    logger.error(f"❌ Self-healed selector also failed: {e}")
+                    return False
+            else:
+                logger.error(f"❌ Self-healing could not find alternative selector")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Click failed: {e}")
+            return False
     
     async def process_vision(self, screenshot: bytes, context: str = "", text_command: str = "") -> Optional[Dict[str, Any]]:
         """
