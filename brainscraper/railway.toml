@@ -1,12 +1,13 @@
 [build]
-# Switched to NIXPACKS - Dockerfile has build context issues with Root Directory
-# Nixpacks handles monorepo Root Directory better than Dockerfile
-builder = "NIXPACKS"
-watchPatterns = [
-  "brainscraper/**"
-]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+# Watch brainscraper directory for changes
+watchPatterns = ["**"]
+# Force rebuild for V2 Pilot deployment
 
 [deploy]
+# Docker CMD handles startup (npm start)
+startCommand = "npm start"
 healthcheckPath = "/"
 healthcheckTimeout = 180
 restartPolicyType = "ON_FAILURE"
