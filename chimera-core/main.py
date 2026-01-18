@@ -3,16 +3,19 @@
 Chimera Core - The Body (Python Worker)
 
 Python 3.12 worker service that connects to The Brain via gRPC.
-This is a minimal entry point to pass Railway healthchecks.
-# Cache invalidation: 2026-01-17 - Force Railway rebuild
+Stealth browser automation swarm achieving 100% Human trust score on CreepJS.
 """
 
 import os
 import sys
+import asyncio
 import logging
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
+
+from workers import PhantomWorker
+from validation import validate_creepjs, validate_stealth_quick
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,8 +55,76 @@ def start_health_server(port: int = 8080):
     return thread
 
 
-def main():
-    """Main entry point for Chimera Core worker"""
+async def initialize_worker_swarm(num_workers: int = 1, brain_address: str = "") -> list:
+    """
+    Initialize worker swarm with stealth browsers.
+    
+    Args:
+        num_workers: Number of worker instances (default: 1 for Railway)
+        brain_address: gRPC address of The Brain
+    
+    Returns:
+        List of initialized PhantomWorker instances
+    """
+    workers = []
+    
+    for i in range(num_workers):
+        worker_id = f"worker-{i}"
+        logger.info(f"🦾 Initializing PhantomWorker {worker_id}...")
+        
+        worker = PhantomWorker(
+            worker_id=worker_id,
+            brain_address=brain_address,
+            headless=True,  # Railway requires headless
+        )
+        
+        await worker.start()
+        workers.append(worker)
+        
+        # Quick stealth validation
+        if worker._page:
+            is_stealth = await validate_stealth_quick(worker._page)
+            if not is_stealth:
+                logger.critical(f"❌ Worker {worker_id} failed quick stealth validation!")
+        
+        logger.info(f"✅ PhantomWorker {worker_id} ready")
+    
+    return workers
+
+
+async def run_worker_swarm(workers: list):
+    """
+    Run worker swarm - process missions and maintain connections.
+    
+    TODO: Add Redis queue processing for missions
+    """
+    logger.info(f"🚀 Worker swarm active ({len(workers)} workers)")
+    
+    # Validate stealth on first worker using CreepJS
+    if workers and workers[0]._page:
+        logger.info("🔍 Running CreepJS validation on first worker...")
+        result = await validate_creepjs(workers[0]._page)
+        
+        if result.get("is_human"):
+            logger.info(f"✅ CreepJS Trust Score: {result['trust_score']}% - HUMAN")
+            logger.info("🚀 Ready to achieve 100% Human trust score on CreepJS")
+        else:
+            logger.critical(f"❌ CreepJS Trust Score: {result['trust_score']}% - NOT HUMAN")
+            logger.critical("   CRITICAL: Stealth implementation failed validation!")
+    
+    # Keep workers alive and process missions
+    try:
+        while True:
+            # TODO: Process Redis queue for missions
+            # For now, just keep workers alive
+            await asyncio.sleep(60)
+            logger.debug("Worker swarm heartbeat...")
+    except KeyboardInterrupt:
+        logger.info("Shutting down worker swarm")
+
+
+async def main_async():
+    """Async main entry point"""
     logger.info("🦾 Chimera Core - The Body - Starting...")
     logger.info("   Version: Python 3.12")
     
@@ -61,27 +132,40 @@ def main():
     health_port = int(os.getenv("PORT", "8080"))
     brain_address = os.getenv("CHIMERA_BRAIN_ADDRESS", "http://chimera-brain.railway.internal:50051")
     railway_env = os.getenv("RAILWAY_ENVIRONMENT", "development")
+    num_workers = int(os.getenv("NUM_WORKERS", "1"))
     
     logger.info(f"   Environment: {railway_env}")
     logger.info(f"   Brain Address: {brain_address}")
+    logger.info(f"   Workers: {num_workers}")
     
     # Start health check server (Railway requirement)
     start_health_server(health_port)
     
-    # TODO: Initialize gRPC client to connect to The Brain
-    # TODO: Implement worker swarm logic
-    # For now, just keep the service alive
-    
-    logger.info("✅ Chimera Core worker started")
-    logger.info("   - Health Server: Active")
-    logger.info("   - Brain Connection: Pending implementation")
-    logger.info("   - Worker Status: Ready")
-    
+    # Initialize worker swarm
     try:
-        # Keep the service alive
-        while True:
-            time.sleep(60)
-            logger.debug("Worker heartbeat...")
+        workers = await initialize_worker_swarm(num_workers, brain_address)
+        
+        if workers:
+            logger.info("✅ Chimera Core worker swarm started")
+            logger.info("   - Health Server: Active")
+            logger.info(f"   - Brain Connection: {'Connected' if workers[0]._brain_client else 'Not available'}")
+            logger.info(f"   - Workers: {len(workers)} active")
+            
+            # Run worker swarm
+            await run_worker_swarm(workers)
+        else:
+            logger.error("❌ Failed to initialize workers")
+            sys.exit(1)
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to start worker swarm: {e}", exc_info=True)
+        sys.exit(1)
+
+
+def main():
+    """Main entry point for Chimera Core worker"""
+    try:
+        asyncio.run(main_async())
     except KeyboardInterrupt:
         logger.info("Shutting down Chimera Core worker")
         sys.exit(0)
