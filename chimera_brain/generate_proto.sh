@@ -1,5 +1,6 @@
 #!/bin/bash
-# Generate Python gRPC classes from chimera.proto
+# Generate Python gRPC classes from proto.chimera.proto
+# Uses local proto file to avoid path resolution issues in Railway builds
 
 set -e
 
@@ -8,17 +9,17 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}Generating Python gRPC classes from chimera.proto...${NC}"
+echo -e "${GREEN}Generating Python gRPC classes from proto.chimera.proto...${NC}"
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
-PROTO_DIR="$PROJECT_ROOT/@proto"
+PROTO_FILE="$SCRIPT_DIR/proto.chimera.proto"
 OUTPUT_DIR="$SCRIPT_DIR/proto"
 
-# Check if proto file exists
-if [ ! -f "$PROTO_DIR/chimera.proto" ]; then
-    echo -e "${YELLOW}Error: chimera.proto not found at $PROTO_DIR/chimera.proto${NC}"
+# Check if proto file exists locally
+if [ ! -f "$PROTO_FILE" ]; then
+    echo -e "${YELLOW}Error: proto.chimera.proto not found at $PROTO_FILE${NC}"
+    echo -e "${YELLOW}Expected location: chimera_brain/proto.chimera.proto${NC}"
     exit 1
 fi
 
@@ -42,11 +43,12 @@ else
     exit 1
 fi
 
+# Use local proto file with current directory as proto path
 $PYTHON_CMD -m grpc_tools.protoc \
-    --proto_path="$PROTO_DIR" \
+    --proto_path="$SCRIPT_DIR" \
     --python_out="$OUTPUT_DIR" \
     --grpc_python_out="$OUTPUT_DIR" \
-    "$PROTO_DIR/chimera.proto"
+    "$PROTO_FILE"
 
 # Check if generation was successful
 if [ $? -eq 0 ]; then
