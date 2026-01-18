@@ -7,11 +7,125 @@ Ensures 100% Human trust score on CreepJS.
 
 import random
 import json
+import math
+import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, field
+from playwright.async_api import Page
 
 logger = logging.getLogger(__name__)
+
+
+class DiffusionMouse:
+    """
+    Native-level biological mouse movement simulation.
+    
+    Replicates original Rust logic:
+    - Non-linear Bezier paths for every mouse move
+    - 1px Gaussian noise to every coordinate (hand tremors)
+    - Fitts's Law velocity curves (acceleration/deceleration)
+    """
+    
+    @staticmethod
+    def generate_bezier_path(
+        start: Tuple[float, float],
+        end: Tuple[float, float],
+        steps: int = 30,
+        jitter: float = 1.0  # 1px Gaussian noise as specified
+    ) -> List[Tuple[float, float, float]]:
+        """
+        Generate Bezier curve path with 1px Gaussian noise.
+        
+        Args:
+            start: (x, y) starting position
+            end: (x, y) ending position
+            steps: Number of intermediate points
+            jitter: Gaussian noise amplitude (1px as per spec)
+        
+        Returns:
+            List of (x, y, delay_ms) tuples
+        """
+        # Control points for Bezier curve (creates natural arc)
+        mid_x = (start[0] + end[0]) / 2 + random.uniform(-50, 50)
+        mid_y = (start[1] + end[1]) / 2 + random.uniform(-30, 30)
+        
+        path = []
+        
+        for i in range(steps + 1):
+            t = i / steps
+            
+            # Cubic Bezier curve (4 control points)
+            # P(t) = (1-t)³P₀ + 3(1-t)²tP₁ + 3(1-t)t²P₂ + t³P₃
+            x = (
+                (1 - t) ** 3 * start[0] +
+                3 * (1 - t) ** 2 * t * (start[0] + (mid_x - start[0]) * 0.3) +
+                3 * (1 - t) * t ** 2 * (end[0] + (mid_x - end[0]) * 0.3) +
+                t ** 3 * end[0]
+            )
+            y = (
+                (1 - t) ** 3 * start[1] +
+                3 * (1 - t) ** 2 * t * (start[1] + (mid_y - start[1]) * 0.3) +
+                3 * (1 - t) * t ** 2 * (end[1] + (mid_y - end[1]) * 0.3) +
+                t ** 3 * end[1]
+            )
+            
+            # CRITICAL: Add 1px Gaussian noise to every coordinate (hand tremors)
+            jitter_x = random.gauss(0, jitter)  # 1px standard deviation
+            jitter_y = random.gauss(0, jitter)  # 1px standard deviation
+            x += jitter_x
+            y += jitter_y
+            
+            # Fitts's Law: Velocity curve (Ease-In-Out)
+            # Slow at start and end, fast in middle
+            if t < 0.5:
+                # Ease-in (acceleration)
+                ease_t = 2 * t * t
+            else:
+                # Ease-out (deceleration)
+                ease_t = 1 - pow(-2 * t + 2, 2) / 2
+            
+            # Delay based on ease curve (faster in middle)
+            base_delay = 5  # ms per step
+            delay_ms = base_delay + (1 - ease_t) * 10  # 5-15ms range
+            
+            path.append((x, y, delay_ms))
+        
+        return path
+    
+    @staticmethod
+    async def move_to(
+        page: Page,
+        target: Tuple[float, float],
+        current_pos: Tuple[float, float],
+        steps: int = None
+    ) -> Tuple[float, float]:
+        """
+        Move mouse along Bezier path with biological timing.
+        
+        Args:
+            page: Playwright page
+            target: Target (x, y) position
+            current_pos: Current (x, y) position
+            steps: Number of path steps (auto-calculated if None)
+        
+        Returns:
+            Final (x, y) position
+        """
+        # Calculate steps based on distance (longer moves = more steps)
+        distance = math.sqrt((target[0] - current_pos[0]) ** 2 + (target[1] - current_pos[1]) ** 2)
+        if steps is None:
+            steps = max(20, int(distance / 10))  # ~10px per step
+        
+        # Generate Bezier path with 1px Gaussian noise
+        path = DiffusionMouse.generate_bezier_path(current_pos, target, steps, jitter=1.0)
+        
+        # Execute movement
+        for x, y, delay_ms in path:
+            await page.mouse.move(x, y)
+            await asyncio.sleep(delay_ms / 1000.0)  # Convert ms to seconds
+        
+        return target
 
 
 @dataclass

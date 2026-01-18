@@ -14,6 +14,7 @@ from typing import Dict, Any, Optional
 from playwright.async_api import Page
 
 from biological import BiologicalMove, NaturalReader
+from stealth import DiffusionMouse
 
 logger = logging.getLogger(__name__)
 
@@ -56,20 +57,16 @@ async def validate_creepjs(page: Page, timeout: int = 30000) -> Dict[str, Any]:
         # Get current mouse position (center of viewport)
         current_pos = (width // 2, height // 2)
         
-        # 1. Biological mouse movements (3 Bezier paths) - simulates human curiosity
+        # 1. DiffusionMouse movements (3 Bezier paths with 1px Gaussian noise) - simulates human curiosity
+        # Using DiffusionMouse directly from stealth.py (native-level biological simulation)
+        mouse = DiffusionMouse()
         for i in range(3):
             target_x = random.randint(200, width - 200)
             target_y = random.randint(200, height - 200)
             target = (target_x, target_y)
             
-            logger.debug(f"   Biological movement {i+1}/3: Bezier path to ({target_x}, {target_y})")
-            await BiologicalMove.move_mouse_biological(
-                page,
-                current_pos,
-                target,
-                steps=random.randint(25, 35)
-            )
-            current_pos = target
+            logger.debug(f"   DiffusionMouse movement {i+1}/3: Bezier path to ({target_x}, {target_y}) with 1px Gaussian noise")
+            current_pos = await mouse.move_to(page, target, current_pos, steps=random.randint(25, 35))
             await asyncio.sleep(random.uniform(0.3, 0.6))
         
         # 2. Micro-saccade scrolling (natural reading pattern)
@@ -86,9 +83,30 @@ async def validate_creepjs(page: Page, timeout: int = 30000) -> Dict[str, Any]:
         logger.debug("   Performing curiosity hovers (liveness detection)...")
         await NaturalReader.curiosity_hover(page, width, height, num_hovers=3)
         
-        # 4. Wait for CreepJS to calculate trust score after engagement
-        logger.info("   Waiting for CreepJS to calculate trust score (20s timeout)...")
-        await asyncio.sleep(20)  # Increased wait time for full analysis
+        # 5. CRITICAL: Wait for CreepJS with CONTINUOUS liveness engagement
+        # Perform micro-scrolls DURING the wait period to trigger liveness listeners
+        logger.info("   Waiting for CreepJS to calculate trust score (20s with continuous liveness)...")
+        
+        # Perform 10-15 micro-scrolls (2-5px each) with random pauses (5-20ms) during wait
+        wait_duration = 20  # seconds
+        micro_scrolls = random.randint(10, 15)  # 10-15 micro-scrolls as specified
+        scroll_interval = wait_duration / micro_scrolls  # Distribute scrolls evenly
+        
+        for i in range(micro_scrolls):
+            # Micro-scroll (2-5px as specified)
+            scroll_amount = random.uniform(2, 5)
+            await page.mouse.wheel(0, scroll_amount)
+            
+            # Random pause (5-20ms as specified) - simulates eye fixation
+            pause_ms = random.uniform(5, 20)
+            await asyncio.sleep(pause_ms / 1000.0)
+            
+            # Wait for next scroll interval (minus pause time)
+            if i < micro_scrolls - 1:  # Don't wait after last scroll
+                await asyncio.sleep(scroll_interval - (pause_ms / 1000.0))
+        
+        # Final wait to ensure CreepJS has processed all liveness signals
+        await asyncio.sleep(2)
         
         # Extract trust score from page
         # CreepJS displays trust score in the page - wait for it to load
@@ -234,18 +252,13 @@ async def validate_creepjs(page: Page, timeout: int = 30000) -> Dict[str, Any]:
             retry_count += 1
             logger.info(f"   Trust score not found (attempt {retry_count}/{max_retries}), retrying with additional engagement...")
             
-            # Additional biological mouse movement
+            # Additional DiffusionMouse movement (with 1px Gaussian noise)
+            mouse = DiffusionMouse()
             retry_target = (
                 current_pos[0] + random.uniform(-100, 100),
                 current_pos[1] + random.uniform(-100, 100)
             )
-            await BiologicalMove.move_mouse_biological(
-                page,
-                current_pos,
-                retry_target,
-                steps=random.randint(20, 30)
-            )
-            current_pos = retry_target
+            current_pos = await mouse.move_to(page, retry_target, current_pos, steps=random.randint(20, 30))
             
             # Additional micro-scroll
             await NaturalReader.micro_scroll_sequence(page, total_distance=200, micro_scrolls=5)
