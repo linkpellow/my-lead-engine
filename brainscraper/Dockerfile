@@ -1,10 +1,12 @@
 # BrainScraper: Next.js LinkedIn Lead Generation UI
+# Railway Root Directory: brainscraper/
+# Build context is set to brainscraper/ directory
 FROM node:20-slim
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files (from brainscraper/ directory)
 COPY package*.json ./
 
 # Install ALL dependencies (including dev dependencies for build)
@@ -12,7 +14,7 @@ COPY package*.json ./
 # Use --legacy-peer-deps to handle React 19 compatibility with older packages
 RUN npm install --legacy-peer-deps
 
-# Copy application code
+# Copy application code (from brainscraper/ directory)
 COPY . .
 
 # Build the application

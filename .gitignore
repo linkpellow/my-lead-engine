@@ -117,3 +117,4 @@ target/
 # Python cache
 __pycache__/
 *.pyc
+DEPLOYMENT_CRITICAL_INFO.md

@@ -16,11 +16,16 @@ __pycache__/
 *.pyd
 .Python
 
-# Rust build artifacts
+# Rust build artifacts (COMPLETE EXCLUSION - This is a Python-only project)
+**/*.rs
+Cargo.toml
+**/Cargo.toml
+Cargo.lock
+**/Cargo.lock
+build.rs
+**/build.rs
 target/
 **/target/
-Cargo.lock
-
 # Build outputs and artifacts
 dist/
 build/
