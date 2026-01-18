@@ -73,6 +73,8 @@ class BiologicalMove:
             
             # Fitts's Law: Velocity curve (Ease-In-Out)
             # Slow at start and end, fast in middle
+            # Initialize ease_t to prevent UnboundLocalError
+            ease_t = 0.0
             if t < 0.5:
                 # Ease-in (acceleration)
                 ease_t = 2 * t * t
