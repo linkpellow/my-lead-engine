@@ -3,7 +3,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 # Watch brainscraper directory for changes
 watchPatterns = ["**"]
-# Force rebuild for V2 Pilot deployment
+# Force rebuild - Quick Search SSL fix + remove name field
 
 [deploy]
 # Docker CMD handles startup (npm start)
