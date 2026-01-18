@@ -358,9 +358,12 @@ export default function SovereignPilotPage() {
           {/* Tab Selector */}
           <div className="flex gap-2 mb-4 border-b border-gray-700">
             <button
-              onClick={() => setQuickSearchName('')}
+              onClick={() => {
+                setQuickSearchLocation('');
+                setQuickSearchJobTitle('');
+              }}
               className={`px-4 py-2 font-bold text-sm transition ${
-                quickSearchName === '' && quickSearchLocation === '' && quickSearchJobTitle === ''
+                quickSearchLocation === '' && quickSearchJobTitle === ''
                   ? 'bg-green-500 text-black border-b-2 border-green-400'
                   : 'text-green-600 hover:text-green-400'
               }`}
@@ -370,7 +373,7 @@ export default function SovereignPilotPage() {
             <button
               onClick={() => {}}
               className={`px-4 py-2 font-bold text-sm transition ${
-                quickSearchName !== '' || quickSearchLocation !== '' || quickSearchJobTitle !== ''
+                quickSearchLocation !== '' || quickSearchJobTitle !== ''
                   ? 'bg-blue-500 text-black border-b-2 border-blue-400'
                   : 'text-blue-600 hover:text-blue-400'
               }`}
