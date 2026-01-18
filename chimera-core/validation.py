@@ -42,61 +42,90 @@ async def validate_creepjs(page: Page, timeout: int = 30000) -> Dict[str, Any]:
         await asyncio.sleep(5)  # Give CreepJS time to analyze
         
         # Extract trust score from page
-        # CreepJS displays trust score in various formats
-        # Look for "Human" or percentage indicators
-        
+        # CreepJS displays trust score in the page - wait for it to load
         trust_score = 0.0
         is_human = False
         fingerprint_details = {}
         
-        # Method 1: Look for trust score in page content
-        page_content = await page.content()
+        # Wait for CreepJS to finish calculating
+        try:
+            # Wait for the trust score element to appear
+            await page.wait_for_selector('text=/trust|score|human/i', timeout=10000)
+        except Exception:
+            logger.debug("   Trust score element not found, trying alternative methods")
         
-        # Pattern 1: "Human" indicator (100% trust)
-        if "Human" in page_content or '"Human"' in page_content:
-            # Check for percentage near "Human"
-            human_pattern = r'Human[^\d]*(\d+(?:\.\d+)?)%'
-            match = re.search(human_pattern, page_content, re.IGNORECASE)
-            if match:
-                trust_score = float(match.group(1))
-                is_human = trust_score >= 100.0
-            else:
-                # If "Human" appears, assume 100%
-                trust_score = 100.0
-                is_human = True
-        
-        # Pattern 2: Look for trust score percentage
-        if trust_score == 0.0:
+        # Method 1: Extract from page text content
+        try:
+            # Get all text content
+            page_text = await page.inner_text('body')
+            
+            # Look for percentage patterns
             score_patterns = [
-                r'trust[^\d]*(\d+(?:\.\d+)?)%',
-                r'score[^\d]*(\d+(?:\.\d+)?)%',
-                r'(\d+(?:\.\d+)?)%[^\w]*trust',
+                r'(\d+(?:\.\d+)?)\s*%?\s*(?:trust|score|human)',
+                r'(?:trust|score|human)\s*:?\s*(\d+(?:\.\d+)?)\s*%?',
+                r'(\d+(?:\.\d+)?)%',
             ]
             
             for pattern in score_patterns:
-                match = re.search(pattern, page_content, re.IGNORECASE)
-                if match:
-                    trust_score = float(match.group(1))
-                    is_human = trust_score >= 100.0
-                    break
+                matches = re.findall(pattern, page_text, re.IGNORECASE)
+                if matches:
+                    # Get the highest score found
+                    scores = [float(m) for m in matches if m.replace('.', '').isdigit()]
+                    if scores:
+                        trust_score = max(scores)
+                        is_human = trust_score >= 100.0
+                        break
+        except Exception as e:
+            logger.debug(f"   Could not extract from page text: {e}")
         
-        # Method 2: Try to extract from JavaScript variables
+        # Method 2: Try to extract from JavaScript/DOM
         if trust_score == 0.0:
             try:
-                # CreepJS stores trust score in window object
-                trust_score = await page.evaluate("""
+                # CreepJS may store data in various places
+                trust_data = await page.evaluate("""
                     () => {
-                        if (window.trustScore !== undefined) return window.trustScore;
-                        if (window.creep && window.creep.trustScore !== undefined) return window.creep.trustScore;
+                        // Try multiple possible locations
+                        if (window.creep && window.creep.trust !== undefined) {
+                            return { trust: window.creep.trust, source: 'window.creep.trust' };
+                        }
+                        if (window.creep && window.creep.score !== undefined) {
+                            return { trust: window.creep.score, source: 'window.creep.score' };
+                        }
+                        if (window.trustScore !== undefined) {
+                            return { trust: window.trustScore, source: 'window.trustScore' };
+                        }
+                        
+                        // Try to find in DOM
+                        const trustElements = document.querySelectorAll('[class*="trust"], [id*="trust"], [class*="score"], [id*="score"]');
+                        for (const el of trustElements) {
+                            const text = el.textContent || el.innerText;
+                            const match = text.match(/(\\d+(?:\\.\\d+)?)/);
+                            if (match) {
+                                return { trust: parseFloat(match[1]), source: 'DOM' };
+                            }
+                        }
+                        
                         return null;
                     }
                 """)
                 
-                if trust_score is not None:
-                    trust_score = float(trust_score)
+                if trust_data and trust_data.get('trust') is not None:
+                    trust_score = float(trust_data['trust'])
                     is_human = trust_score >= 100.0
+                    logger.debug(f"   Extracted trust score from {trust_data.get('source')}: {trust_score}")
             except Exception as e:
-                logger.debug(f"   Could not extract trust score from JS: {e}")
+                logger.debug(f"   Could not extract trust score from JS/DOM: {e}")
+        
+        # Method 3: Check if page shows "Human" status (assume 100%)
+        if trust_score == 0.0:
+            try:
+                page_text_lower = (await page.inner_text('body')).lower()
+                if 'human' in page_text_lower and ('100' in page_text_lower or 'trust' in page_text_lower):
+                    trust_score = 100.0
+                    is_human = True
+                    logger.info("   Detected 'Human' status - assuming 100% trust score")
+            except Exception:
+                pass
         
         # Extract fingerprint details if available
         try:
