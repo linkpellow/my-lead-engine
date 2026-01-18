@@ -11,7 +11,6 @@ import { NextRequest, NextResponse } from 'next/server';
  */
 
 interface QuickSearchParams {
-  name?: string;
   location?: string;
   jobTitle?: string;
   companyName?: string;
@@ -23,11 +22,11 @@ export async function POST(request: NextRequest) {
     const params = await request.json() as QuickSearchParams;
     
     // Validate at least one search parameter
-    if (!params.name && !params.location && !params.jobTitle && !params.companyName) {
+    if (!params.location && !params.jobTitle && !params.companyName) {
       return NextResponse.json(
         {
           error: 'Invalid parameters',
-          message: 'At least one search parameter required (name, location, jobTitle, or companyName)'
+          message: 'At least one search parameter required (location, jobTitle, or companyName)'
         },
         { status: 400 }
       );
@@ -41,13 +40,6 @@ export async function POST(request: NextRequest) {
     };
 
     // Map V2 Pilot parameters to LinkedIn API parameters
-    if (params.name) {
-      linkedInParams.firstName = params.name.split(' ')[0];
-      if (params.name.split(' ').length > 1) {
-        linkedInParams.lastName = params.name.split(' ').slice(1).join(' ');
-      }
-    }
-
     if (params.location) {
       linkedInParams.location = params.location;
     }
@@ -62,19 +54,21 @@ export async function POST(request: NextRequest) {
 
     console.log('[V2_PILOT_QUICK_SEARCH] Calling LinkedIn API with params:', linkedInParams);
 
-    // Call existing LinkedIn Sales Navigator API
-    const linkedInResponse = await fetch(
-      `${request.nextUrl.origin}/api/linkedin-sales-navigator`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(linkedInParams),
-      }
-    );
+    // Import the LinkedIn handler directly instead of using fetch
+    // This avoids SSL issues with internal API calls
+    const { POST: linkedInHandler } = await import('@/app/api/linkedin-sales-navigator/route');
+    
+    // Create a mock request with the LinkedIn params
+    const mockRequest = {
+      json: async () => linkedInParams,
+      nextUrl: request.nextUrl,
+    } as NextRequest;
 
+    const linkedInResponse = await linkedInHandler(mockRequest);
     const linkedInResult = await linkedInResponse.json();
 
-    if (!linkedInResponse.ok) {
+    // Check for error response
+    if (linkedInResponse.status !== 200) {
       console.error('[V2_PILOT_QUICK_SEARCH] LinkedIn API error:', linkedInResult);
       return NextResponse.json(
         {

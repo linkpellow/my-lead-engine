@@ -82,7 +82,6 @@ export default function SovereignPilotPage() {
   });
 
   // Quick Search state
-  const [quickSearchName, setQuickSearchName] = useState('');
   const [quickSearchLocation, setQuickSearchLocation] = useState('');
   const [quickSearchJobTitle, setQuickSearchJobTitle] = useState('');
   const [quickSearchLimit, setQuickSearchLimit] = useState('25');
@@ -233,19 +232,19 @@ export default function SovereignPilotPage() {
 
   // Quick Search - Generate leads from LinkedIn RapidAPI
   const handleQuickSearch = async () => {
-    if (!quickSearchName && !quickSearchLocation && !quickSearchJobTitle) {
-      alert('Please enter at least one search parameter (Name, Location, or Job Title)');
+    if (!quickSearchLocation && !quickSearchJobTitle) {
+      alert('Please enter at least one search parameter (Location or Job Title)');
       return;
     }
 
     setIsQuickSearching(true);
+    setSearchStatus('Generating leads from LinkedIn...');
     try {
       // Call Quick Search API
       const searchResponse = await fetch('/api/v2-pilot/quick-search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: quickSearchName || undefined,
           location: quickSearchLocation || undefined,
           jobTitle: quickSearchJobTitle || undefined,
           limit: parseInt(quickSearchLimit) || 25,
@@ -390,14 +389,6 @@ export default function SovereignPilotPage() {
             <div className="space-y-3">
               <input
                 type="text"
-                value={quickSearchName}
-                onChange={(e) => setQuickSearchName(e.target.value)}
-                placeholder="Name (e.g., John Doe)"
-                className="w-full bg-black text-green-400 border border-blue-500 p-2 rounded font-mono text-sm focus:outline-none focus:border-blue-300"
-                disabled={isQuickSearching}
-              />
-              <input
-                type="text"
                 value={quickSearchLocation}
                 onChange={(e) => setQuickSearchLocation(e.target.value)}
                 placeholder="Location (e.g., Naples, FL)"
@@ -426,7 +417,7 @@ export default function SovereignPilotPage() {
             </div>
             <button
               onClick={handleQuickSearch}
-              disabled={isQuickSearching || (!quickSearchName && !quickSearchLocation && !quickSearchJobTitle)}
+              disabled={isQuickSearching || (!quickSearchLocation && !quickSearchJobTitle)}
               className="w-full mt-3 bg-blue-500 text-black font-bold py-3 px-6 rounded hover:bg-blue-400 disabled:bg-gray-600 disabled:cursor-not-allowed transition"
             >
               {isQuickSearching ? '⏳ SEARCHING & FIRING...' : '🔍 QUICK SEARCH & FIRE'}
