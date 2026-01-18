@@ -82,11 +82,12 @@ class PhantomWorker:
         logger.info(f"   Launching Chromium with stealth args...")
         logger.debug(f"   Critical flag: --disable-blink-features=AutomationControlled")
         
-        # Use chromium (not chromium_headless_shell) for Railway compatibility
+        # Launch Chromium with stealth args
+        # Note: Playwright will use chromium_headless_shell by default
+        # System dependencies should be installed via --with-deps flag
         self._browser = await self._playwright.chromium.launch(
             headless=self.headless,
             args=launch_args,
-            channel="chromium",  # Use full Chromium, not headless shell
         )
         
         # Create context with fingerprint
