@@ -163,8 +163,15 @@ async def main_async():
     logger.info(f"   Brain Address: {brain_address}")
     logger.info(f"   Workers: {num_workers}")
     
-    # Test PostgreSQL connection (Phase 2: Persistence Layer)
-    test_db_connection()
+    # Phase 2: Test PostgreSQL connection (MANDATORY - No memory = No excellence)
+    # Worker MUST exit if database connection fails
+    logger.info("🗄️ Testing PostgreSQL Persistence Layer connection...")
+    db_connected = test_db_connection()
+    if not db_connected:
+        logger.critical("❌ CRITICAL: PostgreSQL connection failed - No memory = No excellence")
+        logger.critical("   EXITING WITH CODE 1 - Worker cannot operate without persistence")
+        sys.exit(1)
+    logger.info("✅ PostgreSQL Persistence Layer verified - Worker approved for deployment")
     
     # Start health check server (Railway requirement)
     start_health_server(health_port)
