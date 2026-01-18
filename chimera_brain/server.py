@@ -20,8 +20,10 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
 # Import generated proto classes (will be created by generate_proto.sh)
+# Files are generated in root directory, not proto/ subfolder
 try:
-    from proto import chimera_pb2, chimera_pb2_grpc
+    import chimera_pb2
+    import chimera_pb2_grpc
 except ImportError:
     # Fallback if proto files not generated yet
     logging.warning("Proto files not generated. Run ./generate_proto.sh first.")
