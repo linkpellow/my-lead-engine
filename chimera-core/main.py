@@ -17,7 +17,7 @@ from threading import Thread
 
 from workers import PhantomWorker
 from validation import validate_creepjs, validate_stealth_quick
-from db_bridge import test_db_connection, log_mission_result
+from db_bridge import test_db_connection, log_mission_result, record_stealth_check
 
 logging.basicConfig(
     level=logging.INFO,
@@ -117,15 +117,11 @@ async def run_worker_swarm(workers: list):
                 logger.info("🚀 Ready to achieve 100% Human trust score on CreepJS")
                 logger.info("✅ BLOCKING GATE PASSED - Worker swarm approved for deployment")
                 
-                # Phase 2: Log mission result to PostgreSQL
-                log_mission_result(
+                # Phase 2: Record stealth check to PostgreSQL (using connection pool)
+                record_stealth_check(
                     worker_id=workers[0].worker_id,
-                    trust_score=result['trust_score'],
-                    is_human=True,
-                    validation_method="creepjs",
-                    fingerprint_details=result.get("fingerprint_details", {}),
-                    mission_type="stealth_validation",
-                    mission_status="completed"
+                    score=result['trust_score'],
+                    fingerprint=result.get("fingerprint_details", {})
                 )
             else:
                 # This should not happen if validate_creepjs exits properly

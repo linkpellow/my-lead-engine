@@ -3,37 +3,95 @@ Chimera Core - Database Bridge
 
 PostgreSQL persistence layer for mission results and worker performance.
 Records 100% Human trust scores and selector repair history.
+
+Uses connection pooling for high-concurrency worker swarm.
 """
 
 import os
 import logging
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 from typing import Dict, Any, Optional
 from datetime import datetime
+import threading
 
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("APP_DATABASE_URL")
 
+# Connection pool for high-concurrency worker swarm
+_connection_pool: Optional[pool.ThreadedConnectionPool] = None
+_pool_lock = threading.Lock()
+
+
+def get_connection_pool():
+    """
+    Get or create PostgreSQL connection pool.
+    
+    Returns:
+        ThreadedConnectionPool or None if DATABASE_URL not set
+    """
+    global _connection_pool
+    
+    if not DATABASE_URL:
+        return None
+    
+    if _connection_pool is None:
+        with _pool_lock:
+            if _connection_pool is None:
+                try:
+                    # Connection pool: min 2, max 10 connections
+                    # Supports high-concurrency worker swarm
+                    _connection_pool = pool.ThreadedConnectionPool(
+                        minconn=2,
+                        maxconn=10,
+                        dsn=DATABASE_URL
+                    )
+                    logger.debug("✅ PostgreSQL connection pool created (2-10 connections)")
+                except Exception as e:
+                    logger.error(f"❌ Failed to create connection pool: {e}")
+                    return None
+    
+    return _connection_pool
+
 
 def get_db_connection():
     """
-    Get PostgreSQL connection.
+    Get PostgreSQL connection from pool.
     
     Returns:
-        psycopg2 connection object or None if DATABASE_URL not set
+        psycopg2 connection object or None if pool unavailable
     """
-    if not DATABASE_URL:
-        logger.warning("⚠️ DATABASE_URL not set - database persistence disabled")
+    pool = get_connection_pool()
+    if not pool:
         return None
     
     try:
-        conn = psycopg2.connect(DATABASE_URL)
+        conn = pool.getconn()
         return conn
     except Exception as e:
-        logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
+        logger.error(f"❌ Failed to get connection from pool: {e}")
         return None
+
+
+def return_db_connection(conn):
+    """
+    Return connection to pool.
+    
+    Args:
+        conn: Connection to return
+    """
+    pool = get_connection_pool()
+    if pool and conn:
+        try:
+            pool.putconn(conn)
+        except Exception as e:
+            logger.error(f"❌ Failed to return connection to pool: {e}")
+            try:
+                conn.close()
+            except:
+                pass
 
 
 def ensure_mission_results_table(conn):
@@ -90,6 +148,35 @@ def ensure_mission_results_table(conn):
     except Exception as e:
         logger.error(f"❌ Failed to create mission_results table: {e}")
         conn.rollback()
+
+
+def record_stealth_check(
+    worker_id: str,
+    score: float,
+    fingerprint: Optional[Dict[str, Any]] = None
+) -> bool:
+    """
+    Record stealth check result (100% human gate).
+    
+    Convenience function for logging CreepJS validation results.
+    
+    Args:
+        worker_id: Worker identifier (e.g., "worker-0")
+        score: Trust score (0.0-100.0)
+        fingerprint: Optional fingerprint details dict
+    
+    Returns:
+        True if logged successfully, False otherwise
+    """
+    return log_mission_result(
+        worker_id=worker_id,
+        trust_score=score,
+        is_human=(score >= 100.0),
+        validation_method="creepjs",
+        fingerprint_details=fingerprint,
+        mission_type="stealth_validation",
+        mission_status="completed" if score >= 100.0 else "failed"
+    )
 
 
 def log_mission_result(
@@ -159,7 +246,7 @@ def log_mission_result(
         
         conn.commit()
         cur.close()
-        conn.close()
+        return_db_connection(conn)  # Return to pool instead of closing
         
         if is_human and trust_score >= 100.0:
             logger.info(f"✅ Mission result logged: {worker_id} - {trust_score}% HUMAN")
@@ -171,8 +258,11 @@ def log_mission_result(
     except Exception as e:
         logger.error(f"❌ Failed to log mission result: {e}")
         if conn:
-            conn.rollback()
-            conn.close()
+            try:
+                conn.rollback()
+            except:
+                pass
+            return_db_connection(conn)  # Return to pool even on error
         return False
 
 
@@ -196,14 +286,15 @@ def test_db_connection() -> bool:
         cur.execute("SELECT version();")
         version = cur.fetchone()[0]
         cur.close()
-        conn.close()
+        return_db_connection(conn)  # Return to pool instead of closing
         
         logger.info(f"✅ Connected to PostgreSQL Persistence Layer")
         logger.debug(f"   PostgreSQL version: {version.split(',')[0]}")
+        logger.debug(f"   Connection pool: 2-10 connections (high-concurrency ready)")
         return True
         
     except Exception as e:
         logger.error(f"❌ PostgreSQL connection test failed: {e}")
         if conn:
-            conn.close()
+            return_db_connection(conn)  # Return to pool even on error
         return False
