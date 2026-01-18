@@ -1,21 +1,18 @@
-# BrainScraper: Next.js LinkedIn Lead Generation UI
-# Railway Root Directory: brainscraper/
-# Build context is set to brainscraper/ directory
+# BrainScraper – for LOCAL only: docker build -f brainscraper/Dockerfile . from repo root
+# with build context = brainscraper/ (e.g. docker build -f brainscraper/Dockerfile brainscraper).
+# For RAILWAY: use Root Directory = EMPTY and /Dockerfile at repo root (see /Dockerfile).
 FROM node:20-slim
 
-# Set working directory
 WORKDIR /app
 
-# Copy package files first (Railway context is at brainscraper/ root)
+# Copy package files (context root = brainscraper/ when Root Directory = brainscraper)
 COPY package.json ./
 COPY package-lock.json* ./
 
-# Install ALL dependencies (including dev dependencies for build)
-# Use npm install instead of npm ci since lock file may be out of sync
-# Use --legacy-peer-deps to handle React 19 compatibility with older packages
+# Install ALL dependencies (including dev for build). --legacy-peer-deps for React 19.
 RUN npm install --legacy-peer-deps
 
-# Copy application code
+# Copy application code (brainscraper/.dockerignore excludes node_modules, .next)
 COPY . .
 
 # Build the application

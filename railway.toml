@@ -1,7 +1,18 @@
+# Root railway.toml – used when a service has Root Directory = empty (e.g. brainscraper).
+# Other services use their own: chimera-core, chimera_brain, scrapegoat, brainscraper/railway.toml
+#
+# For brainscraper: set Root Directory = EMPTY so /Dockerfile is used (context=repo root).
+# Set NO_CACHE=1 for first deploy to clear cache, then remove.
+
 [build]
-builder = "NIXPACKS"
+builder = "DOCKERFILE"
 
 [deploy]
 startCommand = "npm start"
 healthcheckPath = "/"
-healthcheckTimeout = 100
+healthcheckTimeout = 180
+
+[environments.production]
+NODE_ENV = "production"
+NEXT_TELEMETRY_DISABLED = "1"
+NO_CACHE = "1"
