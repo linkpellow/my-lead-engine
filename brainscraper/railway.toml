@@ -1,6 +1,7 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+# Dockerfile is in same directory as railway.toml (brainscraper/Dockerfile)
+# Railway will auto-detect it when Root Directory = brainscraper
 # Watch brainscraper directory for changes
 watchPatterns = ["**"]
 # Force rebuild - Quick Search SSL fix + remove name field
