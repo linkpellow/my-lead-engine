@@ -22,18 +22,18 @@ except (AttributeError, ValueError):
 print("🔧 [STARTUP] Loading Scrapegoat module...", flush=True)
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request, Body
     from fastapi.middleware.cors import CORSMiddleware
     import redis
     # Handling redis-py version differences for search index definition (snake_case vs camelCase)
     try:
-        from redis.commands.search.index_definition import IndexDefinition, IndexType
+        from redis.commands.search.index_definition import IndexDefinition, IndexType  # type: ignore
     except ImportError:
         try:
-            from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+            from redis.commands.search.indexDefinition import IndexDefinition, IndexType  # type: ignore
         except ImportError:
-            IndexDefinition = None
-            IndexType = None
+            IndexDefinition = None  # type: ignore
+            IndexType = None  # type: ignore
     import json
     from typing import Dict, Any
     print("✅ [STARTUP] Core imports successful", flush=True)
@@ -76,6 +76,16 @@ def get_redis():
             print(f"⚠️ Redis connection failed: {e}")
             _redis_client = redis.from_url(redis_url)  # Create anyway for later retry
     return _redis_client
+
+@app.on_event("startup")
+async def startup():
+    """Ensure leads and site_blueprints exist (idempotent)."""
+    try:
+        from init_db import init_db
+        init_db()
+    except Exception as e:
+        print(f"⚠️ init_db at startup (non-fatal): {e}")
+
 
 @app.get("/")
 async def root():
@@ -761,6 +771,131 @@ async def save_blueprint(request: Dict[str, Any]):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save blueprint: {str(e)}")
+
+
+@app.post("/api/blueprints/commit-to-swarm")
+async def commit_blueprint_to_swarm(request: Dict[str, Any]):
+    """
+    Commit to Swarm: write Dojo Golden Route to Redis blueprint:{domain} and site_blueprints.
+    All workers pull from Redis; no restarts. Map-to-Engine / Zero-Bot.
+    """
+    try:
+        domain = request.get("domain")
+        blueprint = request.get("blueprint", request)
+        if not domain:
+            raise HTTPException(status_code=400, detail="domain required")
+        domain = str(domain).replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
+        if not domain:
+            raise HTTPException(status_code=400, detail="domain required")
+
+        # Redis: blueprint:{domain} for workers to hgetall
+        ext = blueprint.get("extraction") or blueprint.get("extractionPaths") or {}
+        mapping = {
+            "name_selector": str(blueprint.get("name_selector") or ext.get("name") or ext.get("name_input") or ""),
+            "result_selector": str(blueprint.get("result_selector") or ext.get("result") or ext.get("result_list") or ""),
+            "url": str(blueprint.get("targetUrl") or blueprint.get("url") or ""),
+            "extraction": json.dumps(ext),
+        }
+        r = get_redis()
+        if r:
+            r.hset(f"blueprint:{domain}", mapping=mapping)
+
+        # PostgreSQL site_blueprints (Dojo State sync)
+        db_url = os.getenv("DATABASE_URL") or os.getenv("APP_DATABASE_URL")
+        if db_url:
+            try:
+                import psycopg2
+                conn = psycopg2.connect(db_url)
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO site_blueprints (domain, blueprint, source, updated_at)
+                    VALUES (%s, %s, 'dojo', NOW())
+                    ON CONFLICT (domain) DO UPDATE SET blueprint = EXCLUDED.blueprint, source = EXCLUDED.source, updated_at = NOW()
+                """, (domain, json.dumps(blueprint)))
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as db_e:
+                pass  # non-fatal
+
+        # Dojo → pipeline activation: mark domain as active so BlueprintLoader/Chimera can prefer it
+        if r:
+            r.set(f"dojo:active_domain:{domain}", "1", ex=3600)  # 1h TTL
+        return {"success": True, "domain": domain, "redis": "ok", "message": "Blueprint committed to swarm"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pipeline/trigger-dojo-domain")
+async def trigger_dojo_domain(request: Request):
+    """
+    Dojo pipeline activation: when Dojo publishes/commits a blueprint, call this to
+    set dojo:active_domain:{domain}=1 (1h TTL). Workers can use it to prefer this domain.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    domain = (data or {}).get("domain") or ""
+    domain = str(domain).replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
+    if not domain:
+        raise HTTPException(status_code=400, detail="domain required")
+    r = get_redis()
+    if r:
+        r.set(f"dojo:active_domain:{domain}", "1", ex=3600)
+    return {"success": True, "domain": domain, "message": "Dojo domain activated for 1h"}
+
+
+@app.post("/api/dojo/trauma")
+async def dojo_trauma(request: Dict[str, Any]):
+    """
+    Self-Correction: VLM/worker reports broken selector. Dojo can mark domain as NEEDS MAPPING.
+    """
+    try:
+        domain = request.get("domain")
+        selector = request.get("selector") or request.get("field", "")
+        reason = request.get("reason", "selector_broken")
+        if not domain:
+            raise HTTPException(status_code=400, detail="domain required")
+        domain = str(domain).replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
+        payload = json.dumps({"selector": selector, "reason": reason, "ts": __import__("datetime").datetime.utcnow().isoformat()})
+        r = get_redis()
+        if r:
+            r.set(f"trauma:{domain}", payload, ex=86400 * 7)  # 7 days
+        return {"success": True, "domain": domain, "message": "Trauma recorded"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/dojo/coordinate-drift")
+async def dojo_coordinate_drift(payload: Dict[str, Any] = Body(default=None)):
+    """
+    Dojo Cartography: VLM detected coordinates differ from Blueprint. Update
+    blueprint:{domain} in Redis with {field}_x, {field}_y so workers adopt the new map.
+    Body: {"domain": "...", "field": "phone|age|income", "x": int, "y": int}
+    """
+    try:
+        payload = payload or {}
+        domain = payload.get("domain")
+        field = payload.get("field") or "unknown"
+        x = payload.get("x")
+        y = payload.get("y")
+        if not domain:
+            raise HTTPException(status_code=400, detail="domain required")
+        domain = str(domain).replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
+        r = get_redis()
+        if r and x is not None and y is not None:
+            key = f"blueprint:{domain}"
+            r.hset(key, mapping={f"{field}_x": str(int(x)), f"{field}_y": str(int(y))})
+        return {"success": True, "domain": domain, "field": field, "x": x, "y": y, "message": "Blueprint coords updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/blueprints")

@@ -1,15 +1,23 @@
 """
 Vision Service - The Brain of Project Chimera
 
-This service uses a Vision-Language Model (VLM) to understand visual intent
-and return coordinates for UI elements based on natural language commands.
+2026 Hybrid-Tiered Vision Layer (Multimodal Document Intelligence):
+- Tier Speed/Body: deepseek-ai/deepseek-vl2-tiny — real-time coordinate grounding, 896px.
+- Tier Accuracy/Cortex: allenai/olmOCR-2-7B-1025 — Golden Record Markdown linearization, 1024px.
+- Consensus: when DeepSeek confidence < 0.95, run olmOCR-2 to verify.
 
-Includes "Trauma Center" functionality for autonomous selector re-mapping.
+Legacy: USE_LOCAL_VLM=1, VLM_MODEL=blip2 (Salesforce/blip2-opt-2.7b).
+
+10s Latency Guard: if VLM inference > 10s, sets SYSTEM_STATE:PAUSED and alerts WEBHOOK_URL.
 """
 
 import io
+import json
 import logging
+import os
 import re
+import time
+import urllib.request
 from datetime import datetime
 from typing import Tuple, Optional, Dict, Any
 import torch
@@ -19,119 +27,354 @@ import numpy as np
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+VLM_LATENCY_GUARD_SEC = 10
+PAUSED_KEY = "SYSTEM_STATE:PAUSED"
+
+# 2026 Consensus: below this, trigger olmOCR-2 verification (in-Brain or flagged for Spine)
+CONFIDENCE_OLMOCR_THRESHOLD = 0.95
+
+# Dynamic resolution (VRAM vs accuracy)
+DEEPSEEK_TARGET_SIZE = 896   # DeepSeek-VL2 sweet spot
+OLMOCR_TARGET_SIZE = 1024   # olmOCR-2 sweet spot
+
+# Env: USE_2026_VISION=1 or VLM_TIER=speed|accuracy|hybrid to enable 2026 stack
+USE_2026_VISION = os.getenv("USE_2026_VISION", "").lower() in ("1", "true", "yes")
+VLM_TIER_2026 = (os.getenv("VLM_TIER", "hybrid") or "hybrid").lower()
+if VLM_TIER_2026 not in ("speed", "accuracy", "hybrid"):
+    VLM_TIER_2026 = "hybrid"
+
+_redis_client = None
+
+
+def _get_redis():
+    global _redis_client
+    if _redis_client is not None:
+        return _redis_client
+    url = os.getenv("REDIS_URL") or os.getenv("APP_REDIS_URL")
+    if not url:
+        return None
+    try:
+        import redis
+        _redis_client = redis.from_url(url, decode_responses=True)
+        return _redis_client
+    except Exception:
+        return None
+
+
+def _set_paused_and_webhook(reason: str, latency_sec: float) -> None:
+    r = _get_redis()
+    if r:
+        try:
+            r.set(PAUSED_KEY, reason)
+        except Exception:
+            pass
+    url = os.getenv("WEBHOOK_URL")
+    if url:
+        try:
+            body = json.dumps({"reason": reason, "latency_sec": latency_sec, "event": "vlm_latency_guard"})
+            req = urllib.request.Request(url, data=body.encode(), headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=10)
+        except Exception as e:
+            logger.warning(f"WEBHOOK_URL alert failed: {e}")
+
+USE_LOCAL_VLM = os.getenv("USE_LOCAL_VLM", "").lower() in ("1", "true", "yes")
+VLM_MODEL = os.getenv("VLM_MODEL", "blip2").lower()
+
+
+def _resize_for_tier(image: Image.Image, tier: str) -> Image.Image:
+    """Dynamic Resolution Scaling: 896px for DeepSeek, 1024px for olmOCR."""
+    w, h = image.size
+    target = DEEPSEEK_TARGET_SIZE if tier == "speed" else OLMOCR_TARGET_SIZE
+    if max(w, h) <= target:
+        return image
+    if w >= h:
+        nw, nh = target, max(1, int(h * target / w))
+    else:
+        nh, nw = target, max(1, int(w * target / h))
+    return image.resize((nw, nh), Image.Resampling.LANCZOS)
+
+
+def _load_deepseek_vl2(device: str) -> Tuple[Any, Any]:
+    """Load deepseek-ai/deepseek-vl2-tiny for speed-tier coordinate grounding. Returns (processor, model) or (None, None)."""
+    try:
+        from vram_manager import set_fraction_for_speed_tier
+        set_fraction_for_speed_tier()
+    except Exception:
+        pass
+    try:
+        from transformers import AutoProcessor, AutoModelForCausalLM
+        name = "deepseek-ai/deepseek-vl2-tiny"
+        dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        proc = AutoProcessor.from_pretrained(name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(name, trust_remote_code=True, torch_dtype=dtype)
+        model = model.to(device).eval()
+        return proc, model
+    except Exception as e:
+        logger.warning(f"DeepSeek-VL2 load failed: {e}")
+        return None, None
+
+
+def _load_olmocr(device: str) -> Tuple[Any, Any]:
+    """Load allenai/olmOCR-2-7B-1025 for accuracy-tier Markdown linearization. Returns (processor, model) or (None, None)."""
+    try:
+        from vram_manager import set_fraction_for_accuracy_tier
+        set_fraction_for_accuracy_tier()
+    except Exception:
+        pass
+    try:
+        from transformers import AutoProcessor, AutoModelForCausalLM
+        name = "allenai/olmOCR-2-7B-1025"
+        dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        proc = AutoProcessor.from_pretrained(name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(name, trust_remote_code=True, torch_dtype=dtype)
+        model = model.to(device).eval()
+        return proc, model
+    except Exception as e:
+        logger.warning(f"olmOCR-2 load failed: {e}")
+        return None, None
+
+
+def _load_blip2(device: str):
+    """Load BLIP-2 for VQA. Returns (processor, model) or (None, None) on failure."""
+    try:
+        from transformers import Blip2ForConditionalGeneration, Blip2Processor
+        name = "Salesforce/blip2-opt-2.7b"
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        proc = Blip2Processor.from_pretrained(name)
+        model = Blip2ForConditionalGeneration.from_pretrained(name, torch_dtype=dtype)
+        model = model.to(device)
+        return proc, model
+    except Exception as e:
+        logger.warning(f"BLIP-2 load failed: {e}")
+        return None, None
+
 
 class VisualIntentProcessor:
     """
-    Processes visual intent using a Vision-Language Model.
-    
-    This is the "Brain" - it takes screenshots and text commands,
-    and returns coordinates where actions should be performed.
+    Visual grounding: screenshot + "Find the area containing X" -> (x, y).
+    2026: DeepSeek-VL2 (speed) + olmOCR-2 (accuracy when conf < 0.95). Legacy: BLIP-2.
     """
-    
+
     def __init__(self, model_name: Optional[str] = None, device: Optional[str] = None):
-        """
-        Initialize the vision model.
-        
-        Args:
-            model_name: Name of the model to load. Defaults to a lightweight option.
-            device: Device to run on ('cuda', 'cpu', or None for auto-detect)
-        """
         self.model_name = model_name or "microsoft/git-base"
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        
-        logger.info(f"Loading vision model: {self.model_name} on {self.device}")
-        
-        try:
-            # Try to load a vision-language model
-            # For production, you'd use a specialized model like Fuyu, LLaVA, or similar
-            # For now, we'll use a simpler approach that works out of the box
-            # You can replace this with your preferred VLM model
-            
-            # Example: Using BLIP or similar models
-            # For now, we'll use a placeholder that can be replaced with actual models
-            logger.info("Vision model placeholder initialized")
-            logger.info("To use a real VLM, replace this with models like:")
-            logger.info("  - microsoft/kosmos-2-patch14-224")
-            logger.info("  - Salesforce/blip-image-captioning-base")
-            logger.info("  - Or fine-tune your own model for coordinate detection")
-            
-            self.model = None
-            self.processor = None
-            
-            # For now, always use fallback
-            # In production, you'd load your fine-tuned model here
-        except Exception as e:
-            logger.warning(f"Failed to load advanced model: {e}")
-            logger.info("Falling back to simple coordinate detection")
-            self.model = None
-            self.processor = None
+        self.model = None
+        self.processor = None
+        self._deepseek_proc: Any = None
+        self._deepseek_model: Any = None
+        self._olmocr_proc: Any = None
+        self._olmocr_model: Any = None
+
+        if USE_2026_VISION:
+            self._deepseek_proc, self._deepseek_model = _load_deepseek_vl2(self.device)
+            if self._deepseek_model is not None:
+                logger.info(f"2026 Speed tier: DeepSeek-VL2-tiny on {self.device} (resize {DEEPSEEK_TARGET_SIZE}px)")
+            # olmOCR lazy-loaded on first conf < 0.95
+            if self._deepseek_model is None:
+                logger.info("DeepSeek-VL2 failed; falling back to BLIP-2 or heuristic")
+        need_blip = (USE_LOCAL_VLM or VLM_MODEL in ("blip2", "blip2-opt") or
+                     (USE_2026_VISION and self._deepseek_model is None))
+        if need_blip:
+            self.processor, self.model = _load_blip2(self.device)
+            if self.model is not None:
+                logger.info(f"Local VLM loaded: blip2 on {self.device}")
+            else:
+                logger.info("Local VLM load failed; using heuristic fallback")
+        elif not USE_2026_VISION and VLM_MODEL in ("llava", "moondream"):
+            logger.info(f"VLM_MODEL={VLM_MODEL} not implemented yet; using heuristic fallback")
+        elif not USE_2026_VISION:
+            logger.info("USE_LOCAL_VLM not set; using heuristic fallback. Set USE_LOCAL_VLM=1 or USE_2026_VISION=1.")
     
     def get_click_coordinates(
-        self, 
-        image_bytes: bytes, 
-        text_command: str
-    ) -> Tuple[int, int, float]:
+        self,
+        image_bytes: bytes,
+        text_command: str,
+        suggested_x: Optional[int] = None,
+        suggested_y: Optional[int] = None,
+    ) -> Tuple[int, int, float, bool]:
         """
-        Get click coordinates for a visual intent.
-        
-        Args:
-            image_bytes: PNG image bytes (screenshot)
-            text_command: Natural language command (e.g., "Click the big green button")
-            
-        Returns:
-            Tuple of (x, y, confidence) coordinates
+        Get click coordinates for a visual intent. COORDINATE_DRIFT: when suggested_x/y
+        are provided and VLM result differs by >50px (L1), returns coordinate_drift=True
+        so Dojo can auto-update the map.
+        Returns: (x, y, confidence, coordinate_drift).
         """
+        def _drift(x: int, y: int) -> bool:
+            if suggested_x is None or suggested_y is None:
+                return False
+            return (abs(x - suggested_x) + abs(y - suggested_y)) > 50
+
+        # Normalize Phone/Age/Income for VLM extraction (Sovereign Lead Engine)
+        t = (text_command or "").strip().lower()
+        if t in ("phone", "mobile", "mobile phone", "phone number", "primary phone"):
+            text_command = "the primary mobile phone number"
+        elif t in ("age", "dob", "date of birth", "birth date"):
+            text_command = "the age or date of birth"
+        elif t in ("income", "salary", "household income", "median income"):
+            text_command = "the income or salary"
+
         try:
-            # Validate image bytes before processing
             if not image_bytes or len(image_bytes) < 8:
                 logger.warning(f"Invalid image bytes: empty or too small ({len(image_bytes) if image_bytes else 0} bytes)")
-                return (0, 0, 0.0)
-            
-            # Check for valid image header (PNG, JPEG, etc.)
-            # PNG: 89 50 4E 47 (0x89PNG)
-            # JPEG: FF D8 FF
+                return (0, 0, 0.0, False)
+
             is_png = image_bytes[:4] == b'\x89PNG'
             is_jpeg = image_bytes[:3] == b'\xff\xd8\xff'
-            
             if not (is_png or is_jpeg):
                 logger.warning(f"Image bytes don't have valid PNG/JPEG header. First 8 bytes: {image_bytes[:8].hex()}")
-                # Still try to process - might be another format PIL supports
-            
-            # Load image from BytesIO stream
+
             image_stream = io.BytesIO(image_bytes)
             image = Image.open(image_stream)
             image = image.convert("RGB")
-            
-            # For now, use fallback detection
-            # In production, replace this with your actual VLM model
-            if self.model is None:
-                # Fallback: Simple heuristic-based detection
-                return self._fallback_coordinate_detection(image, text_command)
-            
-            # Use the vision model to understand the command
-            # This is a placeholder - in production, you'd have a fine-tuned model
-            # that specifically outputs bounding boxes or coordinates
-            
-            prompt = f"Find the UI element that matches: '{text_command}'. Return the center coordinates as (x, y)."
-            
-            inputs = self.processor(images=image, text=prompt, return_tensors="pt")
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            
-            with torch.no_grad():
-                outputs = self.model.generate(**inputs, max_new_tokens=50)
-            
-            # Parse coordinates from output
-            # In a real implementation, you'd have a specialized model that outputs
-            # bounding boxes or coordinates directly
-            coordinates = self._parse_coordinates_from_output(outputs, image.size)
-            
-            return coordinates
-            
+
+            # ---- 2026 path: DeepSeek-VL2 (speed) + optional olmOCR-2 (consensus when conf < 0.95) ----
+            if USE_2026_VISION and self._deepseek_model is not None and self._deepseek_proc is not None:
+                im = _resize_for_tier(image, "speed")
+                prompt = f"Find the area of the screen containing: {text_command}. Reply with the center as two integers: x y. Answer:"
+                coords, conf = self._infer_deepseek(im, prompt)
+                # Consensus: if conf < 0.95, run olmOCR-2 for Markdown linearization and verify intent.
+                # (olmOCR-2 produces Markdown; we use it only to verify. Coordinates stay from DeepSeek.)
+                # Only when VLM_TIER_2026 == "hybrid"; "speed" skips olmOCR.
+                if VLM_TIER_2026 == "hybrid" and conf is not None and conf < CONFIDENCE_OLMOCR_THRESHOLD:
+                    md = self._linearize_to_markdown(_resize_for_tier(image, "accuracy"))
+                    if md and self._olmocr_finds_intent(md, text_command):
+                        conf = 0.96
+                        logger.info("Consensus: olmOCR-2 verified intent, confidence set to 0.96")
+                if coords is not None:
+                    # Scale coords from resized (im) back to original image
+                    iw, ih = image.size
+                    mw, mh = im.size
+                    if mw and mh:
+                        x = int(coords[0] * iw / mw) if mw else coords[0]
+                        y = int(coords[1] * ih / mh) if mh else coords[1]
+                        x, y = max(0, min(x, iw - 1)), max(0, min(y, ih - 1))
+                    else:
+                        x, y = coords[0], coords[1]
+                    return (x, y, conf if conf is not None else 0.9, _drift(x, y))
+                r = self._fallback_coordinate_detection(image, text_command)
+                return (r[0], r[1], r[2], False)
+
+            # ---- Legacy: BLIP-2 or heuristic ----
+            if self.model is None or self.processor is None:
+                r = self._fallback_coordinate_detection(image, text_command)
+                return (r[0], r[1], r[2], False)
+
+            prompt = (
+                f"Question: Find the area of the screen containing: {text_command}. "
+                "Reply with the approximate center as two integers: x y. Answer:"
+            )
+            coords = None
+            t0 = time.perf_counter()
+            try:
+                inputs = self.processor(images=image, text=prompt, return_tensors="pt")
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                with torch.no_grad():
+                    out = self.model.generate(**inputs, max_new_tokens=50, do_sample=False)
+                answer = self.processor.decode(out[0], skip_special_tokens=True).strip()
+                coords = self._parse_coords_from_vlm_answer(answer, image.size)
+            except Exception as e:
+                logger.warning(f"VLM inference failed: {e}")
+            elapsed = time.perf_counter() - t0
+            if elapsed > VLM_LATENCY_GUARD_SEC:
+                _set_paused_and_webhook("vlm_latency_guard", elapsed)
+                logger.warning(f"VLM Latency Guard: inference took {elapsed:.1f}s > {VLM_LATENCY_GUARD_SEC}s; SYSTEM_STATE:PAUSED set")
+            if coords is not None:
+                return (coords[0], coords[1], coords[2], _drift(coords[0], coords[1]))
+            r = self._fallback_coordinate_detection(image, text_command)
+            return (r[0], r[1], r[2], False)
+
         except Exception as e:
             logger.error(f"Error processing vision request: {e}")
-            # Return safe defaults on any error
-            return (0, 0, 0.0)
+            return (0, 0, 0.0, False)
     
+    def _infer_deepseek(self, image: Image.Image, prompt: str) -> Tuple[Optional[Tuple[int, int]], Optional[float]]:
+        """Run DeepSeek-VL2; return ((x,y), confidence) or (None, None)."""
+        try:
+            proc, model = self._deepseek_proc, self._deepseek_model
+            if proc is None or model is None:
+                return None, None
+            t0 = time.perf_counter()
+            # Try common VLM input shapes (processor varies by model)
+            try:
+                inputs = proc(images=[image], text=prompt, return_tensors="pt")
+            except Exception:
+                try:
+                    inputs = proc(images=image, text=prompt, return_tensors="pt")
+                except Exception:
+                    inputs = proc([{"role": "user", "content": f"<image>\n{prompt}"}], images=[image], return_tensors="pt")
+            if hasattr(inputs, "to") and callable(getattr(inputs, "to", None)):
+                inputs = inputs.to(self.device)
+            elif hasattr(inputs, "items"):
+                inputs = {k: (v.to(self.device) if hasattr(v, "to") and callable(getattr(v, "to", None)) else v) for k, v in inputs.items()}
+            with torch.no_grad():
+                out = model.generate(**inputs, max_new_tokens=64, do_sample=False)
+            raw = proc.decode(out[0], skip_special_tokens=True) if hasattr(proc, "decode") else str(out[0].tolist())
+            c = self._parse_coords_from_vlm_answer(raw, image.size)
+            elapsed = time.perf_counter() - t0
+            if elapsed > VLM_LATENCY_GUARD_SEC:
+                _set_paused_and_webhook("vlm_latency_guard", elapsed)
+            if c is not None:
+                return (c[0], c[1]), c[2]
+            return None, None
+        except Exception as e:
+            logger.debug("DeepSeek infer: %s", e)
+            return None, None
+
+    def _linearize_to_markdown(self, image: Image.Image) -> Optional[str]:
+        """olmOCR-2: linearize image to Markdown. Lazy-loads model. Returns None on failure."""
+        if self._olmocr_model is None and self._olmocr_proc is None:
+            self._olmocr_proc, self._olmocr_model = _load_olmocr(self.device)
+        if self._olmocr_model is None or self._olmocr_proc is None:
+            return None
+        try:
+            prompt = "Convert this document or UI screenshot to Markdown. Preserve structure and all text. Output:"
+            inputs = self._olmocr_proc(images=[image], text=prompt, return_tensors="pt")
+            inputs = {k: v.to(self.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            with torch.no_grad():
+                out = self._olmocr_model.generate(**inputs, max_new_tokens=512, do_sample=False)
+            raw = self._olmocr_proc.decode(out[0], skip_special_tokens=True) if hasattr(self._olmocr_proc, "decode") else str(out[0].tolist())
+            return raw or None
+        except Exception as e:
+            logger.debug("olmOCR linearize: %s", e)
+            return None
+
+    def _olmocr_finds_intent(self, markdown: str, text_command: str) -> bool:
+        """True if the Markdown likely contains the requested intent (phone/age/income)."""
+        t = (text_command or "").strip().lower()
+        md = (markdown or "").lower()
+        if "phone" in t or "mobile" in t:
+            return bool(re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", md)) or "phone" in md or "mobile" in md
+        if "age" in t or "dob" in t or "birth" in t:
+            return bool(re.search(r"\b(age|dob|birth|years?)\s*:?\s*\d{1,3}\b", md)) or "age" in md
+        if "income" in t or "salary" in t:
+            return "$" in md or "income" in md or "salary" in md or "k" in md
+        return "phone" in md or "age" in md or "income" in md
+
+    def _parse_coords_from_vlm_answer(self, answer: str, image_size: Tuple[int, int]) -> Optional[Tuple[int, int, float]]:
+        """Parse 'x y' or 'CENTER' from VLM answer. Returns (x, y, confidence) or None."""
+        w, h = image_size
+        # Two integers: "100 200" or "100, 200" or "(100, 200)"
+        m = re.search(r"(\d+)\s*[,]\s*(\d+)|(\d+)\s+(\d+)|\(\s*(\d+)\s*,\s*(\d+)\s*\)", answer)
+        if m:
+            g = m.groups()
+            x = int(g[0] or g[2] or g[4])
+            y = int(g[1] or g[3] or g[5])
+            x = max(0, min(x, w))
+            y = max(0, min(y, h))
+            return (x, y, 0.85)
+        # Region fallback
+        a = answer.upper()
+        if "CENTER" in a:
+            return (w // 2, h // 2, 0.7)
+        if "TOP_LEFT" in a or "TOP LEFT" in a:
+            return (w // 4, h // 4, 0.6)
+        if "TOP_RIGHT" in a or "TOP RIGHT" in a:
+            return (3 * w // 4, h // 4, 0.6)
+        if "BOTTOM_LEFT" in a or "BOTTOM LEFT" in a:
+            return (w // 4, 3 * h // 4, 0.6)
+        if "BOTTOM_RIGHT" in a or "BOTTOM RIGHT" in a:
+            return (3 * w // 4, 3 * h // 4, 0.6)
+        return None
+
     def _fallback_coordinate_detection(
         self, 
         image: Image.Image, 
@@ -177,22 +420,6 @@ class VisualIntentProcessor:
         
         logger.info(f"Fallback detection: ({x}, {y}) for '{text_command}'")
         return (x, y, confidence)
-    
-    def _parse_coordinates_from_output(
-        self, 
-        outputs: torch.Tensor, 
-        image_size: Tuple[int, int]
-    ) -> Tuple[int, int, float]:
-        """
-        Parse coordinates from model output.
-        
-        This is a placeholder - in production, you'd have a model that
-        directly outputs bounding boxes or coordinates.
-        """
-        # For now, return center with medium confidence
-        # In reality, you'd decode the model output properly
-        width, height = image_size
-        return (width // 2, height // 2, 0.7)
     
     def find_new_selector(
         self,

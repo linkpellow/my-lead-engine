@@ -113,15 +113,24 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
             # If text_command is provided, use coordinate detection
             if request.text_command:
                 logger.info(f"Coordinate detection requested: '{request.text_command}'")
-                
+
+                # Blueprint suggested coords: if VLM result differs, COORDINATE_DRIFT for Dojo
+                has = getattr(request, 'HasField', None)
+                has_sx = has and request.HasField('suggested_x')
+                has_sy = has and request.HasField('suggested_y')
+                suggested_x = request.suggested_x if has_sx else None
+                suggested_y = request.suggested_y if has_sy else None
+
                 # Check if we should trigger Trauma Center (selector recovery)
                 intent = request.text_command
                 should_heal = self.selector_registry.should_trigger_trauma_center(domain or "unknown", intent)
                 
                 # Try standard coordinate detection first
-                x, y, confidence = self.vision_processor.get_click_coordinates(
+                x, y, confidence, coordinate_drift = self.vision_processor.get_click_coordinates(
                     request.screenshot,
-                    request.text_command
+                    request.text_command,
+                    suggested_x=suggested_x,
+                    suggested_y=suggested_y,
                 )
                 
                 # If confidence is low or Trauma Center should be triggered, attempt healing
@@ -185,7 +194,8 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
                                 y=y,
                                 width=50,
                                 height=50,
-                                elements=[ui_element]
+                                elements=[ui_element],
+                                coordinate_drift=False,
                             )
                         else:
                             # VLM recovery failed
@@ -204,7 +214,8 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
                                     y=0,
                                     width=0,
                                     height=0,
-                                    elements=[]
+                                    elements=[],
+                                    coordinate_drift=False,
                                 )
                             else:
                                 logger.warning(f"⚠️ Trauma Center recovery failed (attempt {failure_count}/3), using fallback coordinates")
@@ -224,9 +235,10 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
                     found=True,
                     x=x,
                     y=y,
-                    width=50,  # Default click target size
+                    width=50,
                     height=50,
-                    elements=[]  # Can be populated with detected UI elements
+                    elements=[],
+                    coordinate_drift=coordinate_drift,
                 )
             else:
                 # General vision processing (description generation)
@@ -235,10 +247,9 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
                 logger.info("General vision processing requested")
                 
                 # Use a default text command to get some coordinates
-                # In production, replace this with actual VLM description
-                x, y, confidence = self.vision_processor.get_click_coordinates(
+                x, y, confidence, _ = self.vision_processor.get_click_coordinates(
                     request.screenshot,
-                    "center of screen"
+                    "center of screen",
                 )
                 
                 return chimera_pb2.VisionResponse(
@@ -249,7 +260,8 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
                     y=0,
                     width=0,
                     height=0,
-                    elements=[]  # TODO: Populate with detected UI elements
+                    elements=[],
+                    coordinate_drift=False,
                 )
                 
         except Exception as e:
@@ -264,7 +276,8 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
                 y=0,
                 width=0,
                 height=0,
-                elements=[]
+                elements=[],
+                coordinate_drift=False,
             )
     
     def QueryMemory(self, request, context):
@@ -371,21 +384,81 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
 # Removed HTTPServerV6 - using standard HTTPServer with 0.0.0.0 binding
 
 
+def _read_json_body(handler: "BaseHTTPRequestHandler") -> dict:
+    length = int(handler.headers.get("Content-Length", 0))
+    if length <= 0:
+        return {}
+    try:
+        return json.loads(handler.rfile.read(length).decode("utf-8"))
+    except Exception:
+        return {}
+
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
-    """Simple HTTP handler for Railway healthchecks"""
-    
+    """HTTP: /health, POST /api/hive-mind/predict-path, POST /api/hive-mind/store-pattern"""
+
     def do_GET(self):
-        if self.path == '/health':
+        if self.path == "/health":
             self.send_response(200)
-            self.send_header('Content-type', 'application/json')
+            self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"status":"healthy","service":"chimera-brain"}')
         else:
             self.send_response(404)
             self.end_headers()
-    
+
+    def do_POST(self):
+        url = self.path.split("?")[0]
+        if url == "/api/hive-mind/predict-path":
+            self._hive_predict_path()
+        elif url == "/api/hive-mind/store-pattern":
+            self._hive_store_pattern()
+        else:
+            self.send_response(404)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"not_found"}')
+
+    def _hive_predict_path(self):
+        try:
+            body = _read_json_body(self)
+            lead_data = body.get("lead_data") or body
+            redis_url = os.getenv("REDIS_URL") or os.getenv("APP_REDIS_URL") or "redis://localhost:6379"
+            hm = HiveMind(redis_url=redis_url)
+            out = hm.predict_enrichment_path(lead_data)
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(out if out is not None else {}).encode())
+        except Exception as e:
+            logger.debug("hive-mind predict-path: %s", e)
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({}).encode())
+
+    def _hive_store_pattern(self):
+        try:
+            body = _read_json_body(self)
+            company = body.get("company", "")
+            city = body.get("city", "")
+            title = body.get("title", "")
+            data_found = body.get("data_found") or {}
+            redis_url = os.getenv("REDIS_URL") or os.getenv("APP_REDIS_URL") or "redis://localhost:6379"
+            hm = HiveMind(redis_url=redis_url)
+            hm.store_pattern(company, city, title, data_found)
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"success":true}')
+        except Exception as e:
+            logger.debug("hive-mind store-pattern: %s", e)
+            self.send_response(500)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+
     def log_message(self, format, *args):
-        # Suppress HTTP server logs
         pass
 
 

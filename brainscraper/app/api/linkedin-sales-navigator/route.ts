@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { locationToFilter } from '@/utils/linkedinLocationIds';
 import { getLocationId } from '@/utils/linkedinLocationDiscovery';
 import { fetchWithTimeout, retryWithBackoff, logger, rateLimiter, validateRequestSize } from '@/utils/apiHelpers';
+import { pushLeadsToEnrichQueue } from '@/utils/redisBridge';
 
 // Initialize cache on server startup (runs once when module loads)
 try {
@@ -708,6 +709,15 @@ export async function POST(request: NextRequest) {
                   }
                 } catch (saveError) {
                   logger.warn('Failed to save via_url results:', saveError);
+                }
+
+                // Redis Bridge: LPUSH person leads to leads_to_enrich so Scrapegoat workers wake up
+                try {
+                  const viaUrlLeads = data?.response?.data && Array.isArray(data.response.data) ? data.response.data : [];
+                  const { pushed } = await pushLeadsToEnrichQueue(viaUrlLeads, 'premium_search_person_via_url', { source: 'linkedin_sales_navigator', endpoint: 'premium_search_person_via_url' });
+                  if (pushed > 0) logger.log(`📤 Redis Bridge: LPUSH ${pushed} leads to leads_to_enrich (via_url)`);
+                } catch (bridgeErr) {
+                  logger.warn('Redis Bridge (via_url) failed:', bridgeErr);
                 }
                 
                 return NextResponse.json({
@@ -2208,6 +2218,14 @@ export async function POST(request: NextRequest) {
     } catch (usageError) {
       // Don't fail the request if usage tracking fails
       logger.warn('Failed to track scrape usage:', usageError);
+    }
+
+    // Redis Bridge: LPUSH person leads to leads_to_enrich so Scrapegoat worker swarm wakes up
+    try {
+      const { pushed } = await pushLeadsToEnrichQueue(finalResults || [], endpoint, { source: 'linkedin_sales_navigator', endpoint });
+      if (pushed > 0) logger.log(`📤 Redis Bridge: LPUSH ${pushed} leads to leads_to_enrich`);
+    } catch (bridgeErr) {
+      logger.warn('Redis Bridge failed:', bridgeErr);
     }
     
     // Return response with pagination metadata and location validation stats

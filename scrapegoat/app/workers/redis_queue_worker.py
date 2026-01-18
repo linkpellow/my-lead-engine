@@ -1,8 +1,12 @@
 """
 Redis Queue Worker
-Processes leads from leads_to_enrich queue and enriches them
+Processes leads from leads_to_enrich queue and enriches them.
 
-Now uses Production-Grade Pipeline Engine with:
+Pipeline (routes.json) includes ChimeraStation, which pushes to chimera:missions.
+Chimera Core consumes chimera:missions and runs Body+Brain (VLM, people-search);
+results come back to chimera:results:{id}. So leads_to_enrich and chimera:missions
+are bridged: queue-based enrichment uses the full AI stack.
+
 - Contract-based stations (prerequisites)
 - Stop conditions (early termination)
 - Budget management (auto stop-loss)

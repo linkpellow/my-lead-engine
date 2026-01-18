@@ -1,5 +1,8 @@
 # Chimera Brain - Python Dependencies
 # The Brain: VLM, Hive Mind, gRPC Server
+#
+# 2026 Vision (USE_2026_VISION=1): DeepSeek-VL2-tiny + olmOCR-2-7B via
+# transformers (trust_remote_code). Ensure enough VRAM for olmOCR (~16GB+).
 
 # gRPC
 grpcio>=1.60.0,<2.0.0
@@ -9,6 +12,7 @@ grpcio-tools>=1.60.0,<2.0.0
 torch>=2.0.0,<3.0.0
 transformers>=4.36.0,<5.0.0
 sentence-transformers>=2.2.0,<3.0.0
+accelerate>=0.20.0
 
 # Redis (for Hive Mind vector memory)
 # redis-py 5.0+ includes search commands (requires Redis Stack server with RediSearch module)

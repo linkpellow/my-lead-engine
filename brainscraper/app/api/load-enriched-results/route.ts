@@ -1,112 +1,149 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDataFilePath, safeReadFile, ensureDataDirectory } from '@/utils/dataDirectory';
+import { Pool } from 'pg';
+import { getDataFilePath, safeReadFile } from '@/utils/dataDirectory';
 
 /**
- * API endpoint to load enriched results from saved files
- * Single source of truth: enriched-all-leads.json
+ * Load enriched results: UNIFIED Postgres + JSON.
+ * - Postgres: queue-based enrichment (leads_to_enrich -> Scrapegoat -> Chimera -> DatabaseSaveStation).
+ * - JSON: enriched-all-leads.json (in-UI aggregate path).
+ * Merges both, dedupes by linkedinUrl (Postgres wins). Surfaces queue-based enrichment in the UI.
  */
 
-export async function GET(request: NextRequest) {
-  try {
-    ensureDataDirectory();
-    
-    // Single source of truth: enriched-all-leads.json
-    let leads: any[] = [];
-    let source = 'none';
-    
-    // Validation function: lead must have name AND phone (email-only leads are excluded)
-    const isValidLead = (lead: any): boolean => {
-      const name = (lead.name || '').trim();
-      const phone = (lead.phone || '').trim().replace(/\D/g, ''); // Remove non-digits for validation
-      // Require phone number (10+ digits) - leads with only email are excluded
-      return name.length > 0 && phone.length >= 10;
-    };
-    
-    // Helper function to check if leads have actual data (not all empty)
-    const hasData = (leadsArray: any[]): boolean => {
-      if (leadsArray.length === 0) return false;
-      // Check if at least one lead has non-empty name, phone, or email
-      return leadsArray.some((lead: any) => 
-        (lead.name && lead.name.trim()) || 
-        (lead.phone && lead.phone.trim()) || 
-        (lead.email && lead.email.trim())
+let _pool: Pool | null = null;
+function getPool(): Pool | null {
+  if (_pool !== null) return _pool;
+  const url = process.env.DATABASE_URL || process.env.APP_DATABASE_URL;
+  if (!url) return null;
+  _pool = new Pool({ connectionString: url });
+  return _pool;
+}
+
+const isValidLead = (lead: Record<string, unknown>): boolean => {
+  const name = String(lead.name || '').trim();
+  const phone = String(lead.phone || '').trim().replace(/\D/g, '');
+  return name.length > 0 && phone.length >= 10;
+};
+
+const hasData = (arr: Record<string, unknown>[]): boolean =>
+  arr.length > 0 && arr.some((l) => (l.name && String(l.name).trim()) || (l.phone && String(l.phone).trim()) || (l.email && String(l.email).trim()));
+
+function rowToLead(row: Record<string, unknown>): Record<string, unknown> {
+  const age = row.age != null ? row.age : null;
+  return {
+    linkedinUrl: row.linkedin_url,
+    name: row.name,
+    phone: row.phone,
+    email: row.email,
+    city: row.city,
+    state: row.state,
+    zipcode: row.zipcode,
+    age,
+    dobOrAge: age != null ? String(age) : '',
+    income: row.income,
+    dncStatus: row.dnc_status ?? 'UNKNOWN',
+    canContact: row.can_contact ?? false,
+    confidence_age: row.confidence_age != null ? Number(row.confidence_age) : undefined,
+    confidence_income: row.confidence_income != null ? Number(row.confidence_income) : undefined,
+    source_metadata: typeof row.source_metadata === 'object' && row.source_metadata !== null ? row.source_metadata : undefined,
+    enriched_at: row.enriched_at,
+    dateScraped: row.enriched_at ? String(row.enriched_at).slice(0, 10) : undefined,
+  };
+}
+
+function jsonRowToLead(row: Record<string, unknown>): Record<string, unknown> {
+  const age = row.age != null ? row.age : null;
+  return {
+    linkedinUrl: row.linkedinUrl || row.linkedin_url,
+    name: row.name,
+    phone: row.phone,
+    email: row.email,
+    city: row.city,
+    state: row.state,
+    zipcode: row.zipcode,
+    age,
+    dobOrAge: age != null ? String(age) : '',
+    income: row.income,
+    dncStatus: row.dncStatus ?? row.dnc_status ?? 'UNKNOWN',
+    canContact: row.canContact ?? row.can_contact ?? false,
+    confidence_age: row.confidence_age != null ? Number(row.confidence_age) : undefined,
+    confidence_income: row.confidence_income != null ? Number(row.confidence_income) : undefined,
+    source_metadata: typeof row.source_metadata === 'object' && row.source_metadata !== null ? row.source_metadata : undefined,
+    enriched_at: row.enriched_at || row.dateScraped,
+    dateScraped: row.dateScraped || (row.enriched_at ? String(row.enriched_at).slice(0, 10) : undefined),
+    _source: 'json',
+  };
+}
+
+export async function GET(_request: NextRequest) {
+  const pool = getPool();
+  let postgresLeads: Record<string, unknown>[] = [];
+  let jsonLeads: Record<string, unknown>[] = [];
+
+  if (pool) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT linkedin_url, name, phone, email, city, state, zipcode, age, income,
+                dnc_status, can_contact, confidence_age, confidence_income, source_metadata, enriched_at
+         FROM leads
+         ORDER BY enriched_at DESC NULLS LAST`
       );
-    };
-    
-    // Load from single source of truth: enriched-all-leads.json
-    const filePath = getDataFilePath('enriched-all-leads.json');
-    const content = safeReadFile(filePath);
-    
-    if (content) {
-      try {
-        const data = JSON.parse(content);
-        
-        // Handle both array format (current) and metadata wrapper format (backward compatibility)
-        let candidateLeads: any[] = [];
-        if (Array.isArray(data)) {
-          candidateLeads = data;
-        } else if (data && typeof data === 'object' && Array.isArray(data.leads)) {
-          // Legacy format with metadata wrapper
-          candidateLeads = data.leads;
-          console.warn('⚠️ [LOAD] Detected legacy data format with metadata wrapper, migrating...');
-        } else {
-          console.error('❌ [LOAD] Invalid data structure in enriched-all-leads.json');
-          throw new Error('Invalid data structure: expected array or object with leads array');
-        }
-        
-        // Validate all items are objects
-        if (!candidateLeads.every(item => typeof item === 'object' && item !== null)) {
-          console.error('❌ [LOAD] Data contains non-object items');
-          throw new Error('Invalid data: all items must be objects');
-        }
-        
-        if (hasData(candidateLeads)) {
-          leads = candidateLeads;
-          source = 'enriched-all-leads.json';
-        }
-      } catch (error) {
-        console.error(`❌ [LOAD] Error parsing enriched-all-leads.json:`, error);
-        // Return empty leads instead of crashing
-        leads = [];
-        source = 'error';
-      }
+      postgresLeads = (rows as Record<string, unknown>[]).map(rowToLead);
+      if (!hasData(postgresLeads)) postgresLeads = [];
+    } catch (e) {
+      console.error('Load enriched (Postgres) error:', e);
     }
-    
-    // Filter leads to only valid ones before returning
-    leads = leads.filter(isValidLead);
-    
-    // Calculate stats
-    const stats = {
-      total: leads.length,
-      withPhone: leads.filter((l: any) => l.phone && l.phone.trim().length >= 10).length,
-      withAge: leads.filter((l: any) => l.dobOrAge && l.dobOrAge.trim().length > 0).length,
-      withState: leads.filter((l: any) => l.state && l.state.trim().length > 0).length,
-      withZip: leads.filter((l: any) => l.zipcode && l.zipcode.trim().length > 0).length,
-      complete: leads.filter((l: any) => {
-        const hasPhone = l.phone && l.phone.trim().length >= 10;
-        const hasAge = l.dobOrAge && l.dobOrAge.trim().length > 0;
-        const hasState = l.state && l.state.trim().length > 0;
-        const hasZip = l.zipcode && l.zipcode.trim().length > 0;
-        return hasPhone && hasAge && hasState && hasZip;
-      }).length,
-    };
-    
-    return NextResponse.json({
-      success: true,
-      leads,
-      source,
-      stats,
-      message: source === 'partial' ? 'Partial results loaded - enrichment may still be in progress' : 'Final results loaded',
-    });
-  } catch (error) {
-    console.error('Error loading enriched results:', error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        leads: [],
-      },
-      { status: 500 }
-    );
   }
+
+  try {
+    const jsonPath = getDataFilePath('enriched-all-leads.json');
+    const raw = safeReadFile(jsonPath);
+    if (raw) {
+      const data = JSON.parse(raw);
+      const arr = Array.isArray(data) ? data : data?.leads || [];
+      jsonLeads = (arr as Record<string, unknown>[]).map(jsonRowToLead).filter((l) => l.linkedinUrl || l.name);
+    }
+  } catch (e) {
+    console.warn('Load enriched (JSON) error:', e);
+  }
+
+  // Merge: dedupe by linkedinUrl, Postgres wins
+  const byUrl = new Map<string, Record<string, unknown>>();
+  for (const l of jsonLeads) {
+    const u = String(l.linkedinUrl || l.linkedin_url || '').trim();
+    if (u) byUrl.set(u, l);
+  }
+  for (const l of postgresLeads) {
+    const u = String(l.linkedinUrl || '').trim();
+    if (u) byUrl.set(u, l);
+  }
+  let leads = Array.from(byUrl.values()).filter(isValidLead);
+
+  const stats = {
+    total: leads.length,
+    withPhone: leads.filter((l) => l.phone && String(l.phone).trim().length >= 10).length,
+    withAge: leads.filter((l) => (l.dobOrAge && String(l.dobOrAge).trim()) || (l.age != null)).length,
+    withState: leads.filter((l) => l.state && String(l.state).trim()).length,
+    withZip: leads.filter((l) => l.zipcode && String(l.zipcode).trim()).length,
+    complete: leads.filter((l) => {
+      const hasPhone = l.phone && String(l.phone).trim().length >= 10;
+      const hasAge = (l.dobOrAge && String(l.dobOrAge).trim()) || (l.age != null);
+      const hasState = l.state && String(l.state).trim();
+      const hasZip = l.zipcode && String(l.zipcode).trim();
+      return !!(hasPhone && hasAge && hasState && hasZip);
+    }).length,
+  };
+
+  const nPostgres = postgresLeads.length;
+  const nJson = jsonLeads.length;
+
+  return NextResponse.json({
+    success: true,
+    leads,
+    source: 'unified',
+    sources: { postgres: nPostgres, json: nJson, merged: leads.length },
+    stats,
+    message: pool
+      ? `Unified: ${leads.length} leads (Postgres: ${nPostgres}, JSON: ${nJson}).`
+      : `JSON only: ${leads.length} (DATABASE_URL not set).`,
+  });
 }

@@ -73,10 +73,16 @@ export async function POST(request: NextRequest) {
     // Check for error response
     if (linkedInResponse.status !== 200) {
       console.error('[V2_PILOT_QUICK_SEARCH] LinkedIn API error:', linkedInResult);
+      const retrySec = linkedInResult.retryAfter ?? linkedInResult.details?.retryAfter ?? 60;
+      const isRateLimit = linkedInResponse.status === 429 || linkedInResult.isRateLimit;
+      const message = isRateLimit
+        ? `Too many requests. Wait ${retrySec} seconds and try again. Use Manual Input to fire leads while you wait.`
+        : (linkedInResult.message || linkedInResult.error || 'Failed to fetch leads');
       return NextResponse.json(
         {
-          error: 'LinkedIn API error',
-          message: linkedInResult.message || linkedInResult.error || 'Failed to fetch leads',
+          error: isRateLimit ? 'Rate limit exceeded' : 'LinkedIn API error',
+          message,
+          retryAfter: isRateLimit ? retrySec : undefined,
           details: linkedInResult,
         },
         { status: linkedInResponse.status }

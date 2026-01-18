@@ -289,3 +289,97 @@ class HiveMind:
                 "num_documents": 0,
                 "index_name": "experiences"
             }
+
+    # --- Enrichment patterns: Path of Least Resistance ---
+
+    def _ensure_patterns_index(self) -> None:
+        """Create Redis Search index for enrichment patterns (company, city, title -> provider, data_found)."""
+        try:
+            self.redis.ft("enrichment_patterns").info()
+            logger.debug("Hive Mind patterns index already exists")
+        except Exception:
+            logger.info("Creating Hive Mind enrichment_patterns index...")
+            schema = (
+                VectorField(
+                    "vector",
+                    "FLAT",
+                    {"TYPE": "FLOAT32", "DIM": 384, "DISTANCE_METRIC": "COSINE"}
+                ),
+                TextField("company"),
+                TextField("city"),
+                TextField("title"),
+                TextField("provider"),
+                TextField("data_found"),
+            )
+            definition = IndexDefinition(prefix=["pattern:"], index_type=IndexType.HASH)
+            self.redis.ft("enrichment_patterns").create_index(schema, definition=definition)
+            logger.info("Hive Mind enrichment_patterns index created")
+
+    def store_pattern(self, company: str, city: str, title: str, data_found: Dict[str, Any]) -> None:
+        """
+        Store successful enrichment signatures in the Redis Vector index.
+        data_found: e.g. {"provider": "TruePeopleSearch", "phone": "...", "age": 1, "income": "..."}
+        """
+        import hashlib
+        self._ensure_patterns_index()
+        company = (company or "").strip()[:200]
+        city = (city or "").strip()[:100]
+        title = (title or "").strip()[:200]
+        text = f"{company} {city} {title}".strip() or "unknown"
+        pid = hashlib.sha256(text.encode()).hexdigest()[:16]
+        prov = str((data_found or {}).get("provider", ""))[:64]
+        try:
+            emb = self.embedding_model.encode(text, convert_to_numpy=True)
+            key = f"pattern:{pid}"
+            self.redis.hset(
+                key,
+                mapping={
+                    "vector": emb.astype(np.float32).tobytes(),
+                    "company": company,
+                    "city": city,
+                    "title": title,
+                    "provider": prov,
+                    "data_found": json.dumps(data_found or {}),
+                }
+            )
+            logger.info("Hive Mind: stored pattern %s -> %s", text[:40], prov)
+        except Exception as e:
+            logger.warning("Hive Mind store_pattern failed (non-fatal): %s", e)
+
+    def predict_enrichment_path(self, lead_data: Dict[str, Any], top_k: int = 1) -> Optional[Dict[str, Any]]:
+        """
+        Before a mission, query the Hive Mind for the Path of Least Resistance
+        based on similar historical leads. Returns best provider and data_found shape if found.
+        """
+        self._ensure_patterns_index()
+        company = (lead_data.get("company") or lead_data.get("Company") or "").strip()[:200]
+        city = (lead_data.get("city") or lead_data.get("City") or "").strip()[:100]
+        title = (lead_data.get("title") or lead_data.get("headline") or lead_data.get("job_title") or "").strip()[:200]
+        text = f"{company} {city} {title}".strip() or "unknown"
+        try:
+            qemb = self.embedding_model.encode(text, convert_to_numpy=True)
+            q = (
+                Query(f"*=>[KNN {top_k} @vector $blob AS score]")
+                .return_field("provider")
+                .return_field("data_found")
+                .return_field("score")
+                .sort_by("score")
+                .dialect(2)
+            )
+            res = self.redis.ft("enrichment_patterns").search(
+                q, query_params={"blob": qemb.astype(np.float32).tobytes()}
+            )
+            if not res.docs or len(res.docs) == 0:
+                return None
+            d = res.docs[0]
+            sim = 1.0 - float(d.score)
+            if sim < 0.6:
+                return None
+            try:
+                df = json.loads(d.data_found) if d.data_found else {}
+            except Exception:
+                df = {}
+            return {"provider": d.provider or "", "data_found": df, "similarity": sim}
+        except Exception as e:
+            logger.warning("Hive Mind predict_enrichment_path failed (non-fatal): %s", e)
+            return None

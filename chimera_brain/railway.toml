@@ -1,12 +1,11 @@
 [build]
-builder = "NIXPACKS"
-# Using Nixpacks - Dockerfile removed from git
-# Generate proto files during build (required for gRPC)
-buildCommand = "pip install -r requirements.txt && chmod +x generate_proto.sh && ./generate_proto.sh"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-# Ensure stubs are generated every time before the process starts (safety net)
-startCommand = "./generate_proto.sh && PYTHONPATH=. python server.py"
+# Docker CMD handles startup (python server.py)
+# Proto files are generated during Docker build
+startCommand = "python server.py"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"

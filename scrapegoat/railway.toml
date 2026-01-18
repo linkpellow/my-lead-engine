@@ -1,19 +1,13 @@
 [build]
-builder = "NIXPACKS"
-buildCommand = "pip install -r requirements.txt && playwright install chromium"
-# Watch paths are evaluated from repository root, not root directory
-# Force watch on both folders to ensure deployments trigger
-# Note: v2 builder may ignore this, but Dashboard should also be set
-watchPatterns = [
-  "scrapegoat/**",
-  "chimera-core/**"
-]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+# Watch scrapegoat directory for changes
+watchPatterns = ["**"]
 
 [deploy]
-# startCommand: Set per-service in Railway Dashboard
-# - scrapegoat (main): python3 main.py
-# - scrapegoat-worker-swarm: python start_redis_worker.py
-# Note: Config-as-code overrides Dashboard, so Root Directory must be set correctly
+# Docker CMD handles startup (python main.py)
+# For worker service, override with: python start_redis_worker.py
+startCommand = "python main.py"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"

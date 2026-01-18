@@ -28,7 +28,7 @@ def init_db():
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # Create leads table
+        # Create leads table (Golden Record: confidence_*, source_metadata)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS leads (
                 id SERIAL PRIMARY KEY,
@@ -43,11 +43,16 @@ def init_db():
                 income VARCHAR(50),
                 dnc_status VARCHAR(20),
                 can_contact BOOLEAN DEFAULT false,
+                confidence_age NUMERIC(3,2),
+                confidence_income NUMERIC(3,2),
+                source_metadata JSONB,
                 enriched_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        
+        for col, typ in [("confidence_age", "NUMERIC(3,2)"), ("confidence_income", "NUMERIC(3,2)"), ("source_metadata", "JSONB")]:
+            cur.execute(f"ALTER TABLE leads ADD COLUMN IF NOT EXISTS {col} {typ}")
+
         # Create index for faster lookups
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_leads_linkedin_url ON leads(linkedin_url)
@@ -58,7 +63,17 @@ def init_db():
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_leads_enriched_at ON leads(enriched_at)
         """)
-        
+
+        # site_blueprints: Dojo Golden Routes for Map-to-Engine (Redis + PG)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS site_blueprints (
+                domain VARCHAR(255) PRIMARY KEY,
+                blueprint JSONB NOT NULL DEFAULT '{}',
+                source VARCHAR(64) DEFAULT 'dojo',
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
         conn.commit()
         cur.close()
         conn.close()

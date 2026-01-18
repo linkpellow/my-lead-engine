@@ -1,14 +1,44 @@
 """
 Database Module
-Saves enriched leads to PostgreSQL with deduplication
+Saves enriched leads to PostgreSQL with deduplication.
+Golden Record: merge with confidence_age, confidence_income, source_metadata.
+Flags for Trauma Center (VLM) when e.g. Junior + $150k income.
 """
+import json
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime
 
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("APP_DATABASE_URL")
+
+
+def _compute_confidence_income(income: Any, title: str) -> float:
+    """0.0–1.0. Low if e.g. Junior + high income → flag for Trauma Center."""
+    if not income or not isinstance(title, str):
+        return 1.0
+    t = title.lower()
+    try:
+        val = int(str(income).replace("$", "").replace(",", "").replace("k", "000").replace("K", "000"))
+    except Exception:
+        return 1.0
+    if ("junior" in t or "associate" in t or "intern" in t) and val > 100_000:
+        return 0.3
+    return 1.0
+
+
+def _compute_confidence_age(age: Any, title: str) -> float:
+    """0.0–1.0. Flag when age > 59 but title doesn’t suggest retiree."""
+    if age is None:
+        return 1.0
+    try:
+        a = int(age)
+    except Exception:
+        return 1.0
+    if a > 59 and title and "retir" not in (title or "").lower():
+        return 0.6
+    return 1.0
 
 def save_to_database(enriched_lead: Dict[str, Any]) -> bool:
     """
@@ -40,19 +70,32 @@ def save_to_database(enriched_lead: Dict[str, Any]) -> bool:
         city = enriched_lead.get('city')
         state = enriched_lead.get('state')
         zipcode = enriched_lead.get('zipcode')
-        age = enriched_lead.get('age')
-        income = enriched_lead.get('income') or enriched_lead.get('median_income')
+        age = enriched_lead.get('age') or enriched_lead.get('chimera_age')
+        income = enriched_lead.get('income') or enriched_lead.get('median_income') or enriched_lead.get('chimera_income')
         dnc_status = enriched_lead.get('dnc_status') or enriched_lead.get('status', 'UNKNOWN')
         can_contact = enriched_lead.get('can_contact', False)
+        title = enriched_lead.get('title') or ''
+
+        # Golden Record: confidence and source_metadata
+        conf_age = _compute_confidence_age(age, title)
+        conf_inc = _compute_confidence_income(income, title)
+        needs_vlm = conf_age < 0.7 or conf_inc < 0.5
+        sources = {}
+        if age is not None:
+            sources['age'] = 'chimera' if enriched_lead.get('chimera_age') is not None else 'census'
+        if income is not None:
+            sources['income'] = 'chimera' if enriched_lead.get('chimera_income') is not None else 'census'
+        source_metadata = json.dumps({'sources': sources, 'needs_vlm_check': needs_vlm, 'title': title})
         
-        # Insert or update with deduplication
+        # Insert or update with deduplication and Golden Record fields
         cur.execute("""
             INSERT INTO leads (
                 linkedin_url, name, phone, email,
                 city, state, zipcode, age, income,
-                dnc_status, can_contact, enriched_at, created_at
+                dnc_status, can_contact, confidence_age, confidence_income, source_metadata,
+                enriched_at, created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), COALESCE((SELECT created_at FROM leads WHERE linkedin_url = %s), NOW()))
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW(), COALESCE((SELECT created_at FROM leads WHERE linkedin_url = %s), NOW()))
             ON CONFLICT (linkedin_url) 
             DO UPDATE SET
                 phone = COALESCE(EXCLUDED.phone, leads.phone),
@@ -64,12 +107,15 @@ def save_to_database(enriched_lead: Dict[str, Any]) -> bool:
                 city = COALESCE(EXCLUDED.city, leads.city),
                 state = COALESCE(EXCLUDED.state, leads.state),
                 zipcode = COALESCE(EXCLUDED.zipcode, leads.zipcode),
+                confidence_age = COALESCE(EXCLUDED.confidence_age, leads.confidence_age),
+                confidence_income = COALESCE(EXCLUDED.confidence_income, leads.confidence_income),
+                source_metadata = COALESCE(EXCLUDED.source_metadata, leads.source_metadata),
                 enriched_at = NOW()
             RETURNING id
         """, (
             linkedin_url, name, phone, email,
             city, state, zipcode, age, income,
-            dnc_status, can_contact, linkedin_url
+            dnc_status, can_contact, conf_age, conf_inc, source_metadata, linkedin_url
         ))
         
         result = cur.fetchone()
@@ -92,7 +138,7 @@ def save_to_database(enriched_lead: Dict[str, Any]) -> bool:
         return False
 
 def ensure_table_exists(cur):
-    """Ensure leads table exists with correct schema"""
+    """Ensure leads table exists with Golden Record columns (confidence_*, source_metadata)."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS leads (
             id SERIAL PRIMARY KEY,
@@ -107,7 +153,16 @@ def ensure_table_exists(cur):
             income VARCHAR(50),
             dnc_status VARCHAR(20),
             can_contact BOOLEAN DEFAULT false,
+            confidence_age NUMERIC(3,2),
+            confidence_income NUMERIC(3,2),
+            source_metadata JSONB,
             enriched_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    for col, typ in [
+        ("confidence_age", "NUMERIC(3,2)"),
+        ("confidence_income", "NUMERIC(3,2)"),
+        ("source_metadata", "JSONB"),
+    ]:
+        cur.execute(f"ALTER TABLE leads ADD COLUMN IF NOT EXISTS {col} {typ}")

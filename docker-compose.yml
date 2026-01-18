@@ -1,0 +1,140 @@
+# Triple-Vessel Local Development Stack
+# Sovereign Neural Pipeline: Brain + Core + Scrapegoat + Infrastructure
+#
+# Start all services: docker compose up
+# Start specific:     docker compose up redis chimera-brain chimera-core
+# Logs:               docker compose logs -f chimera-brain
+# Stop:               docker compose down
+
+version: "3.8"
+
+services:
+  # ============================================================================
+  # INFRASTRUCTURE
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --save 20 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: railway
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ============================================================================
+  # THE BRAIN (Python 3.11 - VLM + gRPC)
+  # ============================================================================
+  chimera-brain:
+    build:
+      context: ./chimera_brain
+      dockerfile: Dockerfile
+    shm_size: "2gb"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - PORT=8080
+      - CHIMERA_BRAIN_PORT=50051
+      - USE_2026_VISION=${USE_2026_VISION:-0}
+      - VLM_TIER=${VLM_TIER:-hybrid}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["python", "server.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # THE BODY (Rust/Python - Stealth Worker Swarm)
+  # ============================================================================
+  chimera-core:
+    build:
+      context: ./chimera-core
+      dockerfile: Dockerfile
+    shm_size: "2gb"
+    environment:
+      - CHIMERA_BRAIN_ADDRESS=http://chimera-brain:50051
+      - BRAINSCRAPER_URL=${BRAINSCRAPER_URL:-http://host.docker.internal:3000}
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/railway
+      - SCRAPEGOAT_URL=http://scrapegoat:8000
+      - DOJO_TRAUMA_URL=http://scrapegoat:8000
+      - CAPSOLVER_API_KEY=${CAPSOLVER_API_KEY}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - DECODO_API_KEY=${DECODO_API_KEY}
+      - DECODO_USER=${DECODO_USER:-user}
+      - CHROMIUM_CHANNEL=${CHROMIUM_CHANNEL:-chrome}
+      - CHROMIUM_USE_NATIVE_TLS=${CHROMIUM_USE_NATIVE_TLS:-1}
+      - CHROME_UA_VERSION=${CHROME_UA_VERSION:-142.0.0.0}
+      - CHROME_UA_PLATFORM=${CHROME_UA_PLATFORM:-Windows}
+    depends_on:
+      chimera-brain:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: ["python", "main.py"]
+
+  # ============================================================================
+  # SCRAPEGOAT (FastAPI - Enrichment Pipeline)
+  # ============================================================================
+  scrapegoat:
+    build:
+      context: ./scrapegoat
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - APP_REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/railway
+      - APP_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/railway
+      - PORT=8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CENSUS_API_KEY=${CENSUS_API_KEY}
+      - RAPIDAPI_KEY=${RAPIDAPI_KEY}
+      - TELNYX_API_KEY=${TELNYX_API_KEY}
+      - USHA_JWT_TOKEN=${USHA_JWT_TOKEN}
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: ["python", "main.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  redis-data:
+  postgres-data:

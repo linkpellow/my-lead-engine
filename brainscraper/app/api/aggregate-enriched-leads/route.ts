@@ -1,11 +1,61 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Pool } from 'pg';
 import { getDataFilePath, safeReadFile, safeWriteFile, ensureDataDirectory } from '@/utils/dataDirectory';
 import { withLock } from '@/utils/fileLock';
 import type { LeadSummary } from '@/utils/extractLeadSummary';
 
+let _pool: Pool | null = null;
+function getPool(): Pool | null {
+  if (_pool !== null) return _pool;
+  const url = process.env.DATABASE_URL || process.env.APP_DATABASE_URL;
+  if (!url) return null;
+  _pool = new Pool({ connectionString: url });
+  return _pool;
+}
+
+/** Upsert one lead to Postgres so queue-based and JSON-based paths both surface in unified load. */
+async function upsertLeadToPostgres(lead: LeadSummary): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+  const linkedinUrl = (lead as any).linkedinUrl || (lead as any).linkedin_url;
+  if (!linkedinUrl) return;
+  const name = (lead.name || '').trim() || 'Unknown';
+  const phone = lead.phone ?? null;
+  const email = lead.email ?? null;
+  const city = lead.city ?? null;
+  const state = lead.state ?? null;
+  const zipcode = lead.zipcode ?? null;
+  const age = lead.age != null ? Number(lead.age) : null;
+  const income = lead.income ?? null;
+  const dncStatus = lead.dncStatus ?? 'UNKNOWN';
+  const canContact = !!lead.canContact;
+  try {
+    await pool.query(
+      `INSERT INTO leads (linkedin_url, name, phone, email, city, state, zipcode, age, income, dnc_status, can_contact, confidence_age, confidence_income, source_metadata, enriched_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1.0, 1.0, '{"sources":{"aggregate":"json"}}'::jsonb, NOW())
+       ON CONFLICT (linkedin_url) DO UPDATE SET
+         name = COALESCE(EXCLUDED.name, leads.name),
+         phone = COALESCE(EXCLUDED.phone, leads.phone),
+         email = COALESCE(EXCLUDED.email, leads.email),
+         city = COALESCE(EXCLUDED.city, leads.city),
+         state = COALESCE(EXCLUDED.state, leads.state),
+         zipcode = COALESCE(EXCLUDED.zipcode, leads.zipcode),
+         age = COALESCE(EXCLUDED.age, leads.age),
+         income = COALESCE(EXCLUDED.income, leads.income),
+         dnc_status = COALESCE(EXCLUDED.dnc_status, leads.dnc_status),
+         can_contact = COALESCE(EXCLUDED.can_contact, leads.can_contact),
+         enriched_at = NOW()`,
+      [linkedinUrl, name, phone, email, city, state, zipcode, age, income, dncStatus, canContact]
+    );
+  } catch (e) {
+    console.warn('[AGGREGATE] Postgres upsert failed:', e);
+  }
+}
+
 /**
- * API endpoint to aggregate enriched leads and save to enriched-all-leads.json
- * Merges new leads with existing leads, deduplicates, and saves
+ * API endpoint to aggregate enriched leads: enriched-all-leads.json + Postgres.
+ * Merges new leads with existing, deduplicates. Also upserts new leads to Postgres so
+ * load-enriched-results (unified) surfaces both pipelines.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -205,8 +255,13 @@ export async function POST(request: NextRequest) {
       // Save aggregated leads with consistent data structure: array of leads
       safeWriteFile(existingPath, JSON.stringify(aggregatedLeads, null, 2));
     });
+
+    // Unify: also upsert new leads to Postgres so load-enriched-results (unified) surfaces both pipelines
+    for (const lead of validNewLeads) {
+      await upsertLeadToPostgres(lead);
+    }
     
-    console.log(`✅ [AGGREGATE] Saved ${aggregatedLeads.length} leads to enriched-all-leads.json (${validNewLeads.length} new, ${newLeads.length - validNewLeads.length} invalid filtered)`);
+    console.log(`✅ [AGGREGATE] Saved ${aggregatedLeads.length} to JSON + Postgres (${validNewLeads.length} new, ${newLeads.length - validNewLeads.length} invalid filtered)`);
     
     return NextResponse.json({
       success: true,

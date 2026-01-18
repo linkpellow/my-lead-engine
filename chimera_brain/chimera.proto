@@ -43,6 +43,8 @@ message ProcessVisionRequest {
   bytes screenshot = 1;
   string context = 2;  // Optional context
   string text_command = 3;  // Optional text command for coordinate detection
+  optional int32 suggested_x = 4;  // Blueprint coords; if VLM differs, coordinate_drift
+  optional int32 suggested_y = 5;
 }
 
 message VisionResponse {
@@ -55,6 +57,7 @@ message VisionResponse {
   int32 y = 6;
   int32 width = 7;
   int32 height = 8;
+  bool coordinate_drift = 9;  // True when VLM coords differ from Blueprint suggested
 }
 
 message UIElement {

@@ -15,7 +15,6 @@ from typing import Dict, Any, Optional
 from loguru import logger
 
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPIDAPI_KEY_SKIP_TRACING = os.getenv("RAPIDAPI_KEY_SKIP_TRACING", RAPIDAPI_KEY)
 
 def skip_trace(identity: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -46,8 +45,8 @@ def skip_trace(identity: Dict[str, Any]) -> Dict[str, Any]:
             logger.info("   Falling back to RapidAPI...")
     
     # Step 2: Fallback to paid RapidAPI
-    api_key = RAPIDAPI_KEY_SKIP_TRACING or RAPIDAPI_KEY
-    
+    api_key = RAPIDAPI_KEY
+
     if not api_key:
         logger.warning("⚠️ RAPIDAPI_KEY not set, skipping paid skip-trace")
         return {}

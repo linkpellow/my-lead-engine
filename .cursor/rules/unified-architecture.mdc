@@ -154,7 +154,7 @@ The **Triple-Vessel Stealth Extraction Engine** consists of three isolated servi
 2. **Identity Resolution:** Resolves raw LinkedIn data into verifiable US identity
 3. **Skip-Tracing:** Calls Skip-Tracing API to find valid phone numbers and emails
    - API: `https://skip-tracing-working-api.p.rapidapi.com/search/byemail` or `/bynameaddress`
-   - Uses `RAPIDAPI_KEY` or `RAPIDAPI_KEY_SKIP_TRACING`
+   - Uses `RAPIDAPI_KEY`
 4. **Telnyx Gatekeep:** Validates phone number
    - If VOIP/Landline or junk carrier → **STOP HERE** (save costs)
    - Only mobile numbers proceed
