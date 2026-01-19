@@ -1,5 +1,5 @@
 ---
-description: "Debug Enrichment with AI: analyze chimera-enrichment-logs or Copy-for-Cursor paste using logs + code. Use when the user pastes enrichment logs, attaches chimera-enrichment-logs-*.json, or asks to analyze/fix people-search or Chimera pipeline failures."
+description: "Debug Enrichment with AI: analyze chimera-enrichment-logs or Copy-for-Cursor paste using logs + code. Use when the user pastes enrichment logs, attaches chimera-enrichment-logs-*.json, or asks to analyze/fix people-search or Chimera pipeline failures. The condition that triggers the agent to run this procedure is in debug-enrichment-condition.mdc."
 ---
 
 # Debug Enrichment with AI (Logs + Code)
@@ -150,6 +150,7 @@ high | medium | low
 
 ## 8. References
 
+- **Condition rule (when the agent must run this):** `.cursor/rules/debug-enrichment-condition.mdc` — IF user pastes Copy-for-Cursor / attaches `chimera-enrichment-logs-*.json` / says "analyze these enrichment logs" etc. THEN the agent MUST follow this procedure.
 - **Pipeline flow:** `.cursor/rules/600-component-relationships.mdc` (Pattern 1, 2; ChimeraStation ↔ Core).
 - **People-search setup:** `PEOPLE_SEARCH_CHECKLIST.md`, `V2_PILOT_RAILWAY_ALIGNMENT.md` §8.
 - **Structured logging:** `scrapegoat/app/pipeline/logging_util.py`, `chimera-core/workers._emit_telemetry`; log format `[Component] action: detail`.

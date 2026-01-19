@@ -154,8 +154,9 @@ Use when a run fails or stalls and you need to correlate logs with code.
 
 ### Rule and map
 
-- **Rule:** `.cursor/rules/debug-enrichment-with-ai.mdc`
-- **Log→code map:** inside the rule; use it to map `failure_mode`, `errors_summary`, and substeps (e.g. `pivot_fill_fail`, `waiting_core`, `redis_miss`) to files and symbols.
+- **Procedure:** `.cursor/rules/debug-enrichment-with-ai.mdc` — Log→code map, @-mentions, workflow, output format.
+- **Condition (for the agent):** `.cursor/rules/debug-enrichment-condition.mdc` — When the user pastes Copy-for-Cursor, attaches `chimera-enrichment-logs-*.json`, or says "analyze these enrichment logs" / "debug this Chimera run", the agent MUST run the procedure above. You can also say: *"Analyze using the Debug Enrichment rule."*
+- **Log→code map:** inside the procedure rule; use it to map `failure_mode`, `errors_summary`, and substeps (e.g. `pivot_fill_fail`, `waiting_core`, `redis_miss`) to files and symbols.
 
 ---
 

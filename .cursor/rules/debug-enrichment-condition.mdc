@@ -1,0 +1,66 @@
+---
+description: "CONDITION: When user pastes v2-pilot Copy-for-Cursor, attaches chimera-enrichment-logs-*.json, or says 'analyze these enrichment logs' / 'debug this Chimera run' / 'why did people-search fail' → you MUST run the Debug Enrichment with AI procedure (debug-enrichment-with-ai.mdc)."
+alwaysApply: false
+globs:
+  - "**/chimera-enrichment-logs-*.json"
+---
+
+# Debug Enrichment — Condition Rule (for the agent)
+
+**This rule defines when you MUST run the Debug Enrichment with AI procedure.** It is an instruction to the agent: satisfy the condition → follow the obligation.
+
+---
+
+## CONDITION: When this rule applies
+
+Apply this rule when **any** of the following is true:
+
+1. **Pasted content** contains:
+   - `--- v2-pilot: paste into Cursor to debug Chimera enrichment ---`
+   - `errors_summary` and (`process-one` or `enrichment` or `pivot_fill_fail` or `waiting_core` or `bottleneck_hint`)
+   - `failure_mode` and (`NETWORK` or `CORE` or `MAPPING` or `EMPTY`)
+
+2. **Attached or opened file** matches:
+   - `chimera-enrichment-logs-*.json` (from v2-pilot **Download logs**)
+
+3. **User says** (or equivalent):
+   - "analyze these enrichment logs"
+   - "debug this Chimera run"
+   - "why did people-search fail"
+   - "analyze using the Debug Enrichment rule"
+   - "use debug-enrichment-with-ai"
+
+---
+
+## WHEN THE CONDITION IS MET: Obligation
+
+You **MUST**:
+
+1. **Load** the logs (from the paste and/or attached JSON). Parse `errors_summary`, `bottleneck_hint`, `enrichment.lastEnrichRun`, `all_log_lines`, and, if present, `chimera.missions`, `chimera.trauma_signals`. If the user also pasted **chimera-core Railway logs**, treat them as required for people-search timeouts / `core_failed` / `pivot_*_fail`.
+
+2. **Map** the halting event or `failure_mode` to code using the **Log → code map** in `.cursor/rules/debug-enrichment-with-ai.mdc` §2.
+
+3. **Read** the mapped files (by @-mention or by reading them). Minimum: `chimera-core/workers.py`, `scrapegoat/app/pipeline/stations/enrichment.py`, `scrapegoat/app/pipeline/stations/blueprint_loader.py`, `chimera-core/main.py`, `scrapegoat/main.py`. Add: `scrapegoat/scripts/seed_magazine_blueprints.py` if `mapping_required`/`redis_miss`; `chimera-core/capsolver.py` if `capsolver_*`/CAPTCHA; `scrapegoat/app/enrichment/identity_resolution.py`, `scrapegoat/app/pipeline/engine.py` if `name_check_fail`/Identity.
+
+4. **Produce** (see debug-enrichment-with-ai.mdc §7):
+   - **Root cause:** Where it halted and why.
+   - **Code location:** File, function, symbol or Redis key.
+   - **Suggested fix:** Concrete change (selector, env, or logic); for `pivot_*_fail` cite PEOPLE_SEARCH_CHECKLIST § DOM/selectors.
+   - **Confidence:** high / medium / low (state "Low without chimera-core Railway logs" if those are missing and the halt is in Chimera).
+
+---
+
+## Procedure reference
+
+The detailed workflow, Log → code map, @-mention list, and prompt template live in:
+
+**`.cursor/rules/debug-enrichment-with-ai.mdc`**
+
+When this condition rule applies, treat that file as the step-by-step procedure. Do not skip: load logs → map to code → read the mapped files → produce the four-part output.
+
+---
+
+## References
+
+- **Checklist (user-facing):** `PEOPLE_SEARCH_CHECKLIST.md` § Debug with AI
+- **Procedure:** `.cursor/rules/debug-enrichment-with-ai.mdc`

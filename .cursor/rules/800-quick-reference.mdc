@@ -83,6 +83,7 @@ Memory Query:
 |---------|------|
 | Start system | `start-triple-vessel.sh` |
 | Debug enrichment (logs+code, AI) | `.cursor/rules/debug-enrichment-with-ai.mdc` |
+| Debug enrichment **condition** (when agent must run it) | `.cursor/rules/debug-enrichment-condition.mdc` |
 | People-search readiness + test | `PEOPLE_SEARCH_CHECKLIST.md` § **Final readiness** |
 | gRPC contract | `@proto/chimera.proto` |
 | Local dev | `docker-compose.yml` |
