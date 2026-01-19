@@ -20,6 +20,7 @@ Usage:
 """
 import os
 import asyncio
+import tempfile
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
@@ -33,6 +34,7 @@ except ImportError:
     REDIS_AVAILABLE = False
 
 from app.scraping.base import BaseScraper
+from app.scraping.captcha_solver import detect_captcha_in_html, get_captcha_solver
 
 # Browser mode for Cloudflare-heavy sites
 try:
@@ -212,25 +214,57 @@ class TruePeopleSearchSpider(BaseScraper):
     ) -> Optional[Dict[str, Any]]:
         """Search using browser mode (handles Cloudflare better)"""
         browser = await self._get_browser_scraper()
-        
+        screenshot_path = None
+
         try:
             # Navigate with human-like behavior
             await browser.goto(url, wait_until="networkidle")
             await asyncio.sleep(2)  # Wait for content to load
-            
+
             # Get page content
             html = await browser.get_html()
-            
-            # Step 1: Verify page content (2026 Tech - detect soft blocks)
+
+            # Screenshot for vision verification (verify_page_content uses it when use_vision=True)
+            try:
+                fd, screenshot_path = tempfile.mkstemp(suffix=".png")
+                os.close(fd)
+                await browser.page.screenshot(path=screenshot_path)
+            except Exception:
+                if screenshot_path and os.path.lexists(screenshot_path):
+                    try:
+                        os.unlink(screenshot_path)
+                    except Exception:
+                        pass
+                screenshot_path = None
+
+            # Step 1: Verify page content (block, success, no-results, vision, CAPTCHA detect)
             is_valid = await self.verify_page_content(
                 html,
-                success_keywords=["phone", "address", "age", "relatives", "current address"]
+                success_keywords=["phone", "address", "age", "relatives", "current address"],
+                use_vision=bool(screenshot_path),
+                screenshot_path=screenshot_path,
             )
-            
+
             if not is_valid:
-                logger.warning("🛡️ Page appears to be blocked or empty")
-                return None
-            
+                # Solve-then-reload: when CAPTCHA detected and solver/VLM available, solve and retry once
+                cap = detect_captcha_in_html(html)
+                can_solve = get_captcha_solver().is_available() or (
+                    getattr(self, "use_cognitive_features", False) and os.getenv("OPENAI_API_KEY")
+                )
+                if cap and can_solve and await self._try_solve_captcha_in_browser(browser, url):
+                    await asyncio.sleep(2)
+                    await browser.goto(url, wait_until="networkidle")
+                    await asyncio.sleep(2)
+                    html = await browser.get_html()
+                    is_valid = await self.verify_page_content(
+                        html,
+                        success_keywords=["phone", "address", "age", "relatives", "current address"],
+                        use_vision=False,
+                        screenshot_path=None,
+                    )
+                if not is_valid:
+                    return None
+
             # Step 2: Extract result card HTML
             # Try to find the first result card (TruePeopleSearch structure)
             # We'll use LLM to parse, so we just need a reasonable HTML snippet
@@ -283,7 +317,13 @@ class TruePeopleSearchSpider(BaseScraper):
         except Exception as e:
             logger.error(f"⚠️ Browser search error: {e}")
             return None
-    
+        finally:
+            if screenshot_path and os.path.lexists(screenshot_path):
+                try:
+                    os.unlink(screenshot_path)
+                except Exception:
+                    pass
+
     async def _search_with_http(
         self, 
         url: str, 

@@ -468,8 +468,8 @@ export default function SovereignPilotPage() {
     }
   };
 
-  // Process one from queue (Enrich = run pipeline via Scrapegoat) with streaming progress.
-  // Uses /api/enrichment/process-one-stream for a live NDJSON feed so the UI does not look frozen.
+  // Process one from queue (Enrich) via Scrapegoat start + poll. No long-lived stream.
+  // Fixes BodyStreamBuffer/AbortError when runs exceed 5–10 min (Chimera 6×90s + overhead).
   const handleEnrichOne = async () => {
     const diag: string[] = [];
     const t = () => new Date().toISOString().slice(11, 23);
@@ -483,156 +483,143 @@ export default function SovereignPilotPage() {
     };
 
     setIsEnriching(true);
-    setEnrichStatus('Connecting…');
+    setEnrichStatus('Quick check…');
     setEnrichProgress(null);
     setEnrichSteps([]);
     setEnrichSubsteps([]);
-    log(`[${t()}] Enrich started (stream). POST /api/enrichment/process-one-stream`);
 
-    const ENRICH_FETCH_TIMEOUT_MS = 330_000; // 330s so Chimera BRPOP 240s + pipeline can finish
-    const abort = typeof AbortSignal !== 'undefined' && AbortSignal.timeout
-      ? AbortSignal.timeout(ENRICH_FETCH_TIMEOUT_MS)
-      : undefined;
+    let diagRes: { redis_connected?: boolean; scrapegoat_ok?: boolean } | null = null;
     try {
-      const r = await fetch('/api/enrichment/process-one-stream', { method: 'POST', signal: abort });
-      if (!r.ok || !r.body) {
-        const text = await r.text();
-        throw new Error(`HTTP ${r.status}: ${text || r.statusText}`);
+      const dr = await fetch('/api/v2-pilot/debug-info', { signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(6000) : undefined });
+      if (dr.ok) {
+        diagRes = await dr.json();
+        setPreflight((prev: any) => ({ ...prev, ...diagRes, checked_at: new Date().toISOString() }));
       }
-      setEnrichStatus('Streaming…');
-      const reader = r.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      let gotDone = false;
+    } catch {
+      /* ignore */
+    }
+    if (diagRes?.scrapegoat_ok === false) {
+      setEnrichStatus(null);
+      setIsEnriching(false);
+      alert('Scrapegoat unreachable. Fix SCRAPEGOAT_API_URL or start Scrapegoat. Enrich skipped.');
+      return;
+    }
+    if (diagRes?.redis_connected === false) {
+      setEnrichStatus(null);
+      setIsEnriching(false);
+      alert('Redis not connected. Fix REDIS_URL. Enrich skipped.');
+      return;
+    }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop() || '';
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          let ev: Record<string, unknown> = {};
+    setEnrichStatus('Starting…');
+    log(`[${t()}] Enrich started (start+poll). POST /api/enrichment/start`);
+
+    try {
+      const startRes = await fetch('/api/enrichment/start', { method: 'POST', signal: AbortSignal.timeout(15000) });
+      const d = (await startRes.json()) as { run_id?: string; done?: boolean; processed?: boolean; message?: string; error?: string; hint?: string };
+      if ((d.done && !d.processed) || d.message === 'Queue empty') {
+        alert(d.message || d.hint || 'Queue empty. Add leads via Queue CSV first.');
+        return;
+      }
+      if (!d.run_id) {
+        setLastEnrichRun({ at: new Date().toISOString(), processed: false, error: d.error || 'No run_id', diagnostic_log: diag } as any);
+        persistLastRun({ at: new Date().toISOString(), processed: false, error: d.error || 'No run_id' });
+        setShowLastRunLogs(true);
+        alert(d.error || 'Start failed: no run_id. Check Scrapegoat logs.');
+        return;
+      }
+      const runId = d.run_id;
+      setEnrichStatus('Processing…');
+
+      const applyProgress = (ev: Record<string, unknown>) => {
+        if (ev.event === 'log' && ev.action != null) {
+          setEnrichSubsteps((s) => [...s, { station: String(ev.component ?? 'Pipeline'), substep: String(ev.action), detail: String(ev.detail ?? '') }]);
+        }
+        if (ev.substep != null) {
+          const st = (ev.station as string) ?? '';
+          const sb = String(ev.substep);
+          setEnrichSubsteps((s) => [...s, { station: st, substep: sb, detail: String(ev.detail ?? '') }]);
+          if (st === 'Chimera' && sb === 'waiting_core') setWaitingCoreSince(Date.now());
+          if (st === 'Chimera' && /^(deep_search_start|pivot_|captcha_|capsolver_|vlm_|extract_|got_result|timeout|core_failed|parse_fail|core_bad_type|get_next_exhausted)/.test(sb)) setWaitingCoreSince(null);
+        }
+        if (ev.step != null && ev.total != null) {
+          setEnrichProgress({
+            step: (ev.step as number) ?? 0,
+            total: (ev.total as number) ?? 0,
+            pct: (ev.pct as number) ?? 0,
+            station: (ev.station as string) ?? '?',
+            status: (ev.status as string) ?? '?',
+            message: ev.message as string | undefined,
+            duration_ms: ev.duration_ms as number | undefined,
+            error: ev.error as string | undefined,
+          });
+        }
+        if (ev.status === 'running') {
+          setEnrichSteps((s) => [...s, { station: (ev.station as string) ?? '?', status: 'running', message: ev.message as string }]);
+        } else if (ev.step != null && ev.status != null) {
+          setEnrichSteps((s) => {
+            const n = [...s];
+            if (n.length) n[n.length - 1] = { ...n[n.length - 1], status: (ev.status as string) ?? '?', duration_ms: ev.duration_ms as number | undefined, message: ev.message as string | undefined, error: ev.error as string | undefined };
+            return n;
+          });
+        }
+      };
+
+      await new Promise<void>((resolve) => {
+        const poll = async () => {
           try {
-            ev = JSON.parse(line) as Record<string, unknown>;
-          } catch {
-            continue;
-          }
-          if (ev.done === true) {
-            gotDone = true;
-            const d = ev;
-            const run = {
-              at: new Date().toISOString(),
-              http_status: 200,
-              diagnostic_log: [
-                'Enrich started (stream).',
-                ...((d.steps as Array<{ station?: string; status?: string; duration_ms?: number }>) || []).map((s) => `Step: ${s.station ?? '?'} — ${s.status ?? '?'} ${s.duration_ms ?? 0}ms`),
-                `Done: processed=${d.processed} success=${d.success}`,
-              ],
-              ...d,
-            };
+            const r = await fetch(`/api/enrichment/status?run_id=${encodeURIComponent(runId)}`, { signal: AbortSignal.timeout(10000) });
+            const data = (r.status === 404 ? { status: 'error' as const, error: 'Run not found' } : await r.json()) as { status: string; progress?: Record<string, unknown>; result?: Record<string, unknown>; error?: string };
+            if (data.status === 'done' && data.result) {
+              const res = data.result as Record<string, unknown>;
+              const run = {
+                at: new Date().toISOString(),
+                http_status: 200,
+                diagnostic_log: ['Enrich (start+poll).', ...((res.steps as Array<{ station?: string; status?: string; duration_ms?: number }>) || []).map((s) => `Step: ${s.station ?? '?'} — ${s.status ?? '?'} ${s.duration_ms ?? 0}ms`), `Done: processed=${res.processed} success=${res.success}`],
+                ...res,
+              };
+              setLastEnrichRun(run as any);
+              persistLastRun(run);
+              setShowLastRunLogs(true);
+              if (res.processed) {
+                alert((res.success as boolean) ? `✅ Enriched 1: ${(res.name as string) || 'saved'}` : `⚠ Processed 1 (not saved). See Last run logs; Download logs for full dump.`);
+              } else {
+                alert((res.message as string) || (res.error as string) || 'Done');
+              }
+              resolve();
+              return;
+            }
+            if (data.status === 'error') {
+              const run = { at: new Date().toISOString(), processed: false, error: data.error || 'Unknown error', diagnostic_log: diag };
+              setLastEnrichRun(run as any);
+              persistLastRun(run);
+              setShowLastRunLogs(true);
+              alert(`Error: ${data.error || 'Unknown'}`);
+              resolve();
+              return;
+            }
+            if (data.progress && typeof data.progress === 'object') applyProgress(data.progress as Record<string, unknown>);
+            setTimeout(poll, 2000);
+          } catch (e) {
+            logErr(`[${t()}] Poll failed: ${e instanceof Error ? e.message : String(e)}`);
+            const run = { at: new Date().toISOString(), processed: false, error: `Status poll failed: ${e instanceof Error ? e.message : String(e)}`, diagnostic_log: diag };
             setLastEnrichRun(run as any);
             persistLastRun(run);
-            if (d.processed) {
-              setShowLastRunLogs(true);
-              alert(
-                (d.success as boolean)
-                  ? `✅ Enriched 1: ${(d.name as string) || 'saved'}`
-                  : `⚠ Processed 1 (not saved). See Last run logs; Download logs for full dump.`
-              );
-            } else {
-              alert((d.message as string) || (d.error as string) || 'Queue empty or Scrapegoat unavailable.');
-            }
-            break;
+            setShowLastRunLogs(true);
+            alert(`Error: Status poll failed. See Last run logs.`);
+            resolve();
           }
-          if (ev.event === 'log' && ev.action != null) {
-            setEnrichSubsteps((s) => [...s, { station: String(ev.component ?? 'Pipeline'), substep: String(ev.action), detail: String(ev.detail ?? '') }]);
-          }
-          if (ev.substep != null) {
-            const st = (ev.station as string) ?? '';
-            const sb = String(ev.substep);
-            setEnrichSubsteps((s) => [...s, { station: st, substep: sb, detail: String(ev.detail ?? '') }]);
-            if (st === 'Chimera' && sb === 'waiting_core') {
-              setWaitingCoreSince(Date.now());
-            }
-            if (st === 'Chimera' && /^(deep_search_start|pivot_|captcha_|capsolver_|vlm_|extract_|got_result|timeout|core_failed|parse_fail|core_bad_type|get_next_exhausted)/.test(sb)) {
-              setWaitingCoreSince(null);
-            }
-          }
-          if (ev.step != null && ev.total != null) {
-            setEnrichProgress({
-              step: (ev.step as number) ?? 0,
-              total: (ev.total as number) ?? 0,
-              pct: (ev.pct as number) ?? 0,
-              station: (ev.station as string) ?? '?',
-              status: (ev.status as string) ?? '?',
-              message: ev.message as string | undefined,
-              duration_ms: ev.duration_ms as number | undefined,
-              error: ev.error as string | undefined,
-            });
-          }
-          if (ev.status === 'running') {
-            setEnrichSteps((s) => [...s, { station: (ev.station as string) ?? '?', status: 'running', message: ev.message as string }]);
-          } else if (ev.step != null && ev.status != null) {
-            setEnrichSteps((s) => {
-              const n = [...s];
-              if (n.length) n[n.length - 1] = { ...n[n.length - 1], status: (ev.status as string) ?? '?', duration_ms: ev.duration_ms as number | undefined, message: ev.message as string | undefined, error: ev.error as string | undefined };
-              return n;
-            });
-          }
-        }
-        if (gotDone) break;
-      }
-      // If we never got done, try parsing any remaining
-      if (buf.trim()) {
-        try {
-          const ev = JSON.parse(buf) as Record<string, unknown>;
-          if (ev.done === true) {
-            const d = ev;
-            setLastEnrichRun({ at: new Date().toISOString(), http_status: 200, diagnostic_log: diag, ...d } as any);
-            persistLastRun({ at: new Date().toISOString(), ...d } as any);
-            if (d.processed) setShowLastRunLogs(true);
-            alert((d.processed && d.success) ? `✅ Enriched 1` : ((d.message as string) || (d.error as string) || 'Done'));
-          }
-        } catch {
-          /* ignore */
-        }
-      }
+        };
+        poll();
+      });
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
-      const rawMsg = err.message || String(e);
-      const causeMsg = (err as Error & { cause?: Error })?.cause?.message || '';
-      const isStreamAbort = /BodyStreamBuffer|aborted|AbortError/i.test(rawMsg) || /BodyStreamBuffer|aborted|AbortError/i.test(causeMsg);
-      logErr(`[${t()}] Request failed. name=${err.name} message=${rawMsg}`);
-      logErr(`[${t()}] Possible causes: Scrapegoat down, SCRAPEGOAT_API_URL wrong, network/proxy, or CORS.`);
-      const cause = (err as Error & { cause?: Error })?.cause;
-      const run = {
-        at: new Date().toISOString(),
-        processed: false,
-        error: isStreamAbort
-          ? 'Stream closed before run finished (timeout, tab closed, or network). Ensure platform/proxy timeouts ≥ 330s and try again.'
-          : rawMsg || 'Unknown',
-        error_name: err.name,
-        error_cause: cause ? (cause instanceof Error ? cause.message : String(cause)) : undefined,
-        error_stack: err.stack || undefined,
-        diagnostic_log: diag,
-        failure_mode: 'NETWORK' as const,
-        hint: isStreamAbort
-          ? 'Connection aborted during stream. Check maxDuration ≥ 330, proxy timeouts, and that the tab stays open.'
-          : 'Check SCRAPEGOAT_API_URL, network, CORS. If failure occurs after ~60–120s: platform (Vercel/Railway) or proxy may be closing the connection—ensure maxDuration ≥ 330 and no proxy timeout < 330s. If Chimera runs long, chimera-core must LPUSH so Scrapegoat does not BRPOP to timeout (~90s); check chimera-core logs.',
-      };
+      logErr(`[${t()}] Start failed. name=${err.name} message=${err.message}`);
+      const run = { at: new Date().toISOString(), processed: false, error: err.message || 'Unknown', error_name: err.name, diagnostic_log: diag, failure_mode: 'NETWORK' as const };
       setLastEnrichRun(run as any);
       persistLastRun(run);
       setShowLastRunLogs(true);
-      setEnrichStatus('Request failed');
-      const isFetchFailed = /failed to fetch|TypeError|network error/i.test(String(run.error)) || run.error_name === 'TypeError';
-      const extra = isStreamAbort
-        ? '\n\nStream was closed (timeout, tab close, or proxy). Ensure maxDuration ≥ 330 and proxy ≥ 330s, and keep the tab open.'
-        : isFetchFailed
-          ? '\n\nIf this occurs after ~60–120s: platform or proxy may be closing the connection (set maxDuration ≥ 330, no proxy timeout < 330s). Also check: chimera-core running and same Redis; chimera-core Railway logs for pivot/CAPTCHA/VLM. After deploy: Chimera step fails in ~90s with heartbeats.'
-          : '';
-      alert(`Error: ${run.error}${extra}\n\nSee Diagnostic log and Download logs.`);
+      alert(`Error: ${err.message}\n\nSee Diagnostic log and Download logs.`);
     } finally {
       setEnrichStatus(null);
       setEnrichProgress(null);
@@ -676,6 +663,8 @@ export default function SovereignPilotPage() {
     error_traceback?: string;
     error_stack?: string;
     suggested_fix?: string;
+    step_index?: number;
+    step_total?: number;
   };
 
   const computeErrorsAndBottleneck = (run: typeof lastEnrichRun) => {
@@ -691,13 +680,16 @@ export default function SovereignPilotPage() {
       if (run.error_traceback) e.error_traceback = run.error_traceback;
       errs.push(e);
     }
-    run?.steps?.forEach((s) => {
+    const stepTotal = run?.steps?.length ?? 0;
+    run?.steps?.forEach((s, i) => {
       if (s.status === 'fail') {
         const e: ErrEntry = {
           source: 'pipeline',
-          where: s.station ?? '?',
+          where: stepTotal ? `${s.station ?? '?'} (${i + 1}/${stepTotal})` : (s.station ?? '?'),
           message: s.error || 'Station failed',
           recent_logs: s.recent_logs?.length ? s.recent_logs : undefined,
+          step_index: stepTotal ? i + 1 : undefined,
+          step_total: stepTotal || undefined,
         };
         if (s.error_file) e.error_file = s.error_file;
         if (s.error_line != null) e.error_line = s.error_line;
@@ -713,7 +705,13 @@ export default function SovereignPilotPage() {
       if (chimeraRe.test(line) && failRe.test(line)) {
         chimeraN++;
         if (errs.filter((e) => e.source === 'chimera').length < 10) {
-          errs.push({ source: 'chimera', where: 'Chimera Deep Search', message: String(line).slice(0, 500) });
+          const ln = String(line).slice(0, 520);
+          const provider = ln.match(/provider[=:]\s*(\S+)/i)?.[1] || ln.match(/(SearchPeopleFree|FastPeopleSearch|ThatsThem|ZabaSearch|TruePeopleSearch|AnyWho)/i)?.[1];
+          errs.push({
+            source: 'chimera',
+            where: provider ? `Chimera Deep Search (provider≈${provider})` : 'Chimera Deep Search',
+            message: ln,
+          });
         }
       }
     });
@@ -796,12 +794,14 @@ export default function SovereignPilotPage() {
     }
   };
 
-  // Copy for Cursor: builds a paste-ready block (errors with file:line, traceback, stack, recent_logs; bottleneck; last_log_lines)
-  const TRUNC_LOG = 35;
-  const TRUNC_LINE = 240;
-  const formatErr = (e: ErrEntry): string[] => {
+  // Copy for Cursor: maximally comprehensive paste (errors with file:line, traceback, stack; run_context; connectivity; diagnostic_log; last_log_lines)
+  const TRUNC_LOG = 40;
+  const TRUNC_LINE = 260;
+  const LAST_LOGS = 55;
+  const formatErr = (e: ErrEntry, ix: number, total: number): string[] => {
     const out: string[] = [];
-    out.push(`  [${e.source}] ${e.where}: ${e.message}`);
+    const tag = total > 1 ? ` [${ix + 1}/${total}]` : '';
+    out.push(`  [${e.source}] ${e.where}${tag}: ${e.message}`);
     if (e.error_file != null && e.error_line != null) {
       out.push(`    file:line => ${e.error_file}:${e.error_line}`);
     } else if (e.error_file != null) {
@@ -810,8 +810,8 @@ export default function SovereignPilotPage() {
     if (e.suggested_fix) out.push(`    suggested_fix: ${e.suggested_fix}`);
     if (e.recent_logs?.length) {
       out.push(`    recent_logs (${e.recent_logs.length}):`);
-      e.recent_logs.slice(0, 20).forEach((ln) => out.push(`      ${String(ln).slice(0, TRUNC_LINE)}`));
-      if (e.recent_logs.length > 20) out.push(`      ... and ${e.recent_logs.length - 20} more`);
+      e.recent_logs.slice(0, 22).forEach((ln) => out.push(`      ${String(ln).slice(0, TRUNC_LINE)}`));
+      if (e.recent_logs.length > 22) out.push(`      ... and ${e.recent_logs.length - 22} more`);
     }
     if (e.error_traceback) {
       const tb = e.error_traceback.trim().split('\n').slice(0, TRUNC_LOG);
@@ -838,39 +838,80 @@ export default function SovereignPilotPage() {
     const l = bottleneck_hint.longest_step as { station: string; duration_ms: number } | null;
     const mf = bottleneck_hint.most_failed_station as { station: string; fail_count: number } | null;
 
-    const errBlock = errorsSummary.length
-      ? errorsSummary.flatMap((e) => formatErr(e))
-      : ['  (none)'];
+    const firstErr = errorsSummary[0];
+    const oneLiner = [
+      `processed=${run.processed} success=${run.success}`,
+      run.failure_mode ? ` failure_mode=${run.failure_mode}` : '',
+      firstErr ? ` first_error=[${firstErr.source}] ${firstErr.where}` : '',
+      run.name ? ` lead="${String(run.name).slice(0, 40)}"` : run.linkedin_url ? ` linkedin=${String(run.linkedin_url).slice(0, 50)}` : '',
+    ].join('');
 
-    const stepDetails = (run.steps ?? []).map((s: { station?: string; status?: string; duration_ms?: number; error?: string; error_file?: string; error_line?: number; suggested_fix?: string }) => {
-      const base = `${s.station}(${s.status})${s.duration_ms ?? 0}ms`;
+    const errBlock =
+      errorsSummary.length > 0
+        ? errorsSummary.flatMap((e, i) => formatErr(e, i, errorsSummary.length))
+        : ['  (none)'];
+
+    const stepTotal = run.steps?.length ?? 0;
+    const stepDetails = (run.steps ?? []).map((s: { station?: string; status?: string; condition?: string; duration_ms?: number; error?: string; error_file?: string; error_line?: number; suggested_fix?: string; started_at?: string }, i: number) => {
+      const idx = stepTotal ? ` ${i + 1}/${stepTotal}` : '';
+      const base = `${s.station}(${s.status},${s.condition ?? '?'})${s.duration_ms ?? 0}ms${idx}`;
       const extra: string[] = [];
-      if (s.error) extra.push(`err=${String(s.error).slice(0, 60)}`);
+      if (s.error) extra.push(`err=${String(s.error).slice(0, 64)}`);
       if (s.error_file != null && s.error_line != null) extra.push(`${s.error_file}:${s.error_line}`);
-      if (s.suggested_fix) extra.push(`fix=${String(s.suggested_fix).slice(0, 50)}`);
+      if (s.suggested_fix) extra.push(`fix=${String(s.suggested_fix).slice(0, 52)}`);
+      if (s.started_at && s.status === 'fail') extra.push(`started=${s.started_at}`);
       return extra.length ? `${base} [${extra.join('; ')}]` : base;
     });
 
-    const lastLogs = allLogLines.slice(-40).map((ln: string) => String(ln).slice(0, TRUNC_LINE));
+    const lastLogs = allLogLines.slice(-LAST_LOGS).map((ln: string) => String(ln).slice(0, TRUNC_LINE));
+    const diagLog = (run.diagnostic_log ?? []).slice(-22).map((ln: string) => String(ln).slice(0, TRUNC_LINE));
 
     const lines: string[] = [
       '--- v2-pilot: paste into Cursor to debug Chimera enrichment ---',
       '',
-      'errors_summary:',
+      '## one_line_summary',
+      oneLiner,
+      '',
+      '## run_context',
+      `  at: ${run.at}`,
+      `  processed: ${run.processed} success: ${run.success}`,
+      ...(run.name != null ? [`  lead.name: ${String(run.name).slice(0, 80)}`] : []),
+      ...(run.linkedin_url != null ? [`  lead.linkedin_url: ${String(run.linkedin_url).slice(0, 100)}`] : []),
+      ...(run.failure_mode != null ? [`  failure_mode: ${run.failure_mode}`] : []),
+      ...(run.failure_at != null ? [`  failure_at: ${run.failure_at}`] : []),
+      ...(run.hint != null ? [`  hint: ${run.hint}`] : []),
+      ...(run.http_status != null ? [`  http_status: ${run.http_status}`] : []),
+      ...(run.error_cause != null ? [`  error_cause: ${String(run.error_cause).slice(0, 120)}`] : []),
+      ...(diagLog.length > 0
+        ? [`  diagnostic_log (last ${diagLog.length}):`, ...diagLog.map((ln) => `    ${ln}`)]
+        : []),
+      '',
+      '## connectivity (at copy time)',
+      preflight != null
+        ? `  preflight: redis=${preflight.redis_connected} scrapegoat=${preflight.scrapegoat_ok} url=${String(preflight.scrapegoat_url ?? '').slice(0, 50)} checked=${preflight.checked_at ?? '?'}`
+        : '  preflight: (not run)',
+      `  queue: leads_to_enrich=${enrichmentQueue.leads_to_enrich} failed_leads=${enrichmentQueue.failed_leads} redis=${enrichmentQueue.redis_connected}`,
+      '',
+      '## errors_summary',
       ...errBlock,
       '',
-      `bottleneck_hint: longest_step=${l ? `${l.station} ${l.duration_ms}ms` : '-'}; chimera_timeout_or_fail_count=${bottleneck_hint.chimera_timeout_or_fail_count}; most_failed=${mf ? `${mf.station} (${mf.fail_count})` : '-'}`,
+      '## bottleneck_hint',
+      `  longest_step: ${l ? `${l.station} ${l.duration_ms}ms` : '-'}`,
+      `  chimera_timeout_or_fail_count: ${bottleneck_hint.chimera_timeout_or_fail_count}`,
+      `  most_failed: ${mf ? `${mf.station} (${mf.fail_count})` : '-'}`,
       '',
-      `last run: processed=${run.processed} success=${run.success}; at=${run.at}`,
-      `steps: ${stepDetails.join(', ') || '-'}`,
+      '## steps',
+      ...stepDetails.map((s) => `  ${s}`),
       '',
-      'last_log_lines (tail 40):',
+      `## last_log_lines (tail ${LAST_LOGS})`,
       ...lastLogs.map((ln) => `  ${ln}`),
       '',
+      '## AI',
       'For people-search/Chimera: also paste Railway logs for chimera-core (last 50–100 lines).',
-      'AI: @chimera-core/workers.py @scrapegoat/app/pipeline/stations/enrichment.py @scrapegoat/app/pipeline/stations/blueprint_loader.py @chimera-core/main.py @scrapegoat/main.py and rule debug-enrichment-with-ai. See PEOPLE_SEARCH_CHECKLIST.md § Debug with AI.',
+      '@chimera-core/workers.py @scrapegoat/app/pipeline/stations/enrichment.py @scrapegoat/app/pipeline/stations/blueprint_loader.py @chimera-core/main.py @scrapegoat/main.py and rule debug-enrichment-with-ai. See PEOPLE_SEARCH_CHECKLIST.md § Debug with AI.',
       '---',
-    ];
+    ].flat();
+
     const text = lines.join('\n');
     navigator.clipboard.writeText(text).then(
       () => alert('Copied. Paste into Cursor.'),

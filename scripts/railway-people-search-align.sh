@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# One-time alignment for Chimera people-search: same Redis as Scrapegoat, 90s timeouts, redeploys.
+# One-time alignment for Chimera people-search: same Redis as Scrapegoat, 90s timeouts, CHIMERA_PROVIDERS from probe, redeploys.
 # Run from repo root with Railway project linked: ./scripts/railway-people-search-align.sh
+# Optional: SCRAPEGOAT_URL=https://scrapegoat-xxx.up.railway.app to set CHIMERA_PROVIDERS from /probe/sites (only "ok" sites).
 #
 # 1) chimera-core: REDIS_URL same as Scrapegoat (needed for BRPOP chimera:missions, LPUSH chimera:results)
-# 2) Scrapegoat: CHIMERA_STATION_TIMEOUT=90 (Dashboard may override railway.toml; this forces 90)
+# 2) Scrapegoat: CHIMERA_STATION_TIMEOUT=90; 2b) if SCRAPEGOAT_URL: CHIMERA_PROVIDERS from /probe/sites (only ok)
 # 3) Redeploy chimera-core and scrapegoat
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,6 +50,35 @@ fi
 railway variable set "CHIMERA_STATION_TIMEOUT=90" -s scrapegoat
 echo "   scrapegoat: CHIMERA_STATION_TIMEOUT=90"
 
+# --- 2b) Scrapegoat: CHIMERA_PROVIDERS from /probe/sites (only "ok" sites). SCRAPEGOAT_URL or RAILWAY_STATIC_URL from scrapegoat. ---
+PROBE_BASE="${SCRAPEGOAT_URL:-}"
+[ -z "$PROBE_BASE" ] && PROBE_BASE=$(railway run -s scrapegoat -- printenv RAILWAY_STATIC_URL 2>/dev/null | tr -d '\n\r' || true)
+PROBE_BASE="${PROBE_BASE%/}"
+if [ -n "$PROBE_BASE" ]; then
+  echo "   Probing $PROBE_BASE/probe/sites for ok sites..."
+  PROBE_JSON=$(curl -s --connect-timeout 10 --max-time 30 "$PROBE_BASE/probe/sites" 2>/dev/null || true)
+  if [ -n "$PROBE_JSON" ]; then
+    OK_SITES=$(printf '%s' "$PROBE_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(','.join(k for k, v in (d.items() if isinstance(d, dict) else []) if v == 'ok'))
+except Exception:
+    print('')
+" 2>/dev/null || true)
+    if [ -n "$OK_SITES" ]; then
+      railway variable set "CHIMERA_PROVIDERS=$OK_SITES" -s scrapegoat
+      echo "   scrapegoat: CHIMERA_PROVIDERS=$OK_SITES (from probe)"
+    else
+      echo "   No ok sites from probe; CHIMERA_PROVIDERS left unset (router uses default MAGAZINE)"
+    fi
+  else
+    echo "   Probe request failed; CHIMERA_PROVIDERS left unset"
+  fi
+else
+  echo "   SCRAPEGOAT_URL / scrapegoat RAILWAY_STATIC_URL not set; CHIMERA_PROVIDERS left unset. Set SCRAPEGOAT_URL to auto-set from /probe/sites"
+fi
+
 # --- 3) Redeploys ---
 echo ""
 echo "Redeploying chimera-core (picks up REDIS_URL, MISSION_TIMEOUT_SEC=90)..."
@@ -58,7 +88,7 @@ if ! railway redeploy -s chimera-core -y; then
   echo "   chimera-core: redeploy skipped (service may be building or deploying). Run when idle: railway redeploy -s chimera-core -y"
 fi
 
-echo "Redeploying scrapegoat (picks up CHIMERA_STATION_TIMEOUT=90)..."
+echo "Redeploying scrapegoat (picks up CHIMERA_STATION_TIMEOUT, CHIMERA_PROVIDERS)..."
 GOAT_SKIP=0
 if ! railway redeploy -s scrapegoat -y; then
   GOAT_SKIP=1
@@ -70,7 +100,8 @@ echo "Done. Chimera Core will BRPOP chimera:missions and LPUSH chimera:results; 
 if [ "$CORE_SKIP" = "1" ] || [ "$GOAT_SKIP" = "1" ]; then
   echo "Reminder — run when each service is idle:"
   [ "$CORE_SKIP" = "1" ] && echo "  railway redeploy -s chimera-core -y   # pick up REDIS_URL"
-  [ "$GOAT_SKIP" = "1" ] && echo "  railway redeploy -s scrapegoat -y     # pick up CHIMERA_STATION_TIMEOUT=90"
+  [ "$GOAT_SKIP" = "1" ] && echo "  railway redeploy -s scrapegoat -y     # pick up CHIMERA_STATION_TIMEOUT, CHIMERA_PROVIDERS"
 fi
 echo "Verify: railway variable list -s chimera-core --kv | grep REDIS_URL"
 echo "        railway variable list -s scrapegoat --kv | grep CHIMERA_STATION_TIMEOUT"
+echo "        railway variable list -s scrapegoat --kv | grep CHIMERA_PROVIDERS"

@@ -217,17 +217,14 @@ def skip_trace_by_name_address(identity: Dict[str, Any], api_key: str) -> Dict[s
         return {}
 
 def skip_trace_alternative_api(name: str, address: str, api_key: str) -> Dict[str, Any]:
-    """Fallback skip-trace API"""
+    """Fallback: retry primary host with citystatezip=address (skip-tracing-api.p.rapidapi.com 404s)."""
     try:
-        url = "https://skip-tracing-api.p.rapidapi.com/by-name-and-address"
+        url = "https://skip-tracing-working-api.p.rapidapi.com/search/bynameaddress"
         headers = {
             "x-rapidapi-key": api_key,
-            "x-rapidapi-host": "skip-tracing-api.p.rapidapi.com"
+            "x-rapidapi-host": "skip-tracing-working-api.p.rapidapi.com"
         }
-        params = {
-            "name": name,
-            "address": address
-        }
+        params = {"name": name, "citystatezip": address}
         
         response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()

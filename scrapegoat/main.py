@@ -39,8 +39,10 @@ try:
     import asyncio
     import json
     import queue
+    import time
+    import uuid
     from contextlib import asynccontextmanager
-    from typing import Dict, Any
+    from typing import Dict, Any, Optional
     from loguru import logger
     logger.info("[STARTUP] Core imports successful")
 except ImportError as e:
@@ -155,6 +157,58 @@ async def queue_status():
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Queue status check failed: {str(e)}")
 
+
+# Probe: which people-search site returns a reachable, non-blocked page (HTTP/stealth)
+PROBE_URLS = {
+    "fastpeoplesearch.com": "https://www.fastpeoplesearch.com/",
+    "thatsthem.com": "https://thatsthem.com/",
+    "truepeoplesearch.com": "https://www.truepeoplesearch.com/",
+}
+_PROBE_BLOCK = ["access denied", "blocked", "forbidden", "cloudflare", "checking your browser", "please enable javascript", "captcha", "rate limit", "too many requests"]
+_PROBE_SUCCESS = ["people", "search", "find", "name", "address", "phone", "email"]
+
+
+@app.get("/probe/sites")
+async def probe_sites(site: Optional[str] = None):
+    """Probe people-search sites (HTTP/stealth). Returns per site: ok, block, empty, client_error, timeout.
+    ?site=fastpeoplesearch.com to probe one. Use to see which site will actually work."""
+    from app.scraping.base import BaseScraper
+
+    to_probe = [site] if (site and site in PROBE_URLS) else list(PROBE_URLS.keys())
+    out: Dict[str, str] = {}
+    for s in to_probe:
+        url = PROBE_URLS[s]
+        try:
+            async with BaseScraper(stealth=True, timeout=15, max_retries=1) as scraper:
+                r = await scraper.get(url)
+            text = (r or {}).get("text") or ""
+            status = int((r or {}).get("status") or 0)
+            if status >= 400:
+                out[s] = f"http_{status}"
+                await asyncio.sleep(2)
+                continue
+        except Exception as e:
+            msg = str(e).lower()
+            if "impersonate" in msg or "not supported" in msg:
+                out[s] = "client_error"
+            elif "timeout" in msg or "timed out" in msg:
+                out[s] = "timeout"
+            else:
+                out[s] = "client_error"
+            await asyncio.sleep(2)
+            continue
+
+        low = text.lower()
+        if any(b in low for b in _PROBE_BLOCK):
+            out[s] = "block"
+        elif any(k in low for k in _PROBE_SUCCESS):
+            out[s] = "ok"
+        else:
+            out[s] = "empty"
+        await asyncio.sleep(2)
+    return out
+
+
 @app.post("/worker/process-lead")
 async def process_lead(lead_data: Dict[str, Any]):
     """Manually trigger lead processing (for testing)"""
@@ -252,6 +306,8 @@ async def _process_one_stream_gen(lead_data: dict, log_buffer: list):
 
     progress_queue = queue.Queue()
     task = asyncio.create_task(asyncio.to_thread(process_lead_with_steps, lead_data, log_buffer, progress_queue))
+    # First chunk in <1s so client can fail in 12s if stream never starts
+    yield json.dumps({"event": "stream_started", "ts": time.time()}) + "\n"
     recent: list = []
     cap = 100
 
@@ -352,6 +408,92 @@ async def process_one_stream():
             media_type="application/x-ndjson",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+
+async def _background_run(run_id: str, lead_data: dict) -> None:
+    """Run pipeline in background, writing progress and result to Redis. No long-lived HTTP."""
+    log_buffer = []
+    key = f"enrich:run:{run_id}"
+    r = get_redis()
+    try:
+        async for ev in _process_one_stream_gen(lead_data, log_buffer):
+            r.hset(key, mapping={"progress": json.dumps(ev), "updated_at": str(time.time())})
+            r.expire(key, 3600)
+            if ev.get("done"):
+                r.hset(key, mapping={"status": "done", "result": json.dumps(ev)})
+                r.expire(key, 3600)
+                return
+    except Exception as e:
+        logger.exception("_background_run error: %s", e)
+        r.hset(key, mapping={"status": "error", "error": str(e)[:2000], "updated_at": str(time.time())})
+        r.expire(key, 3600)
+
+
+@app.post("/worker/process-one-start")
+async def process_one_start():
+    """Pop one lead, start pipeline in background, return run_id immediately. No long-lived stream.
+    Client polls GET /worker/process-one-status?run_id=X until status=done|error.
+    Fixes BodyStreamBuffer/AbortError when runs exceed 5–10 min (Chimera 6×90s + overhead)."""
+    try:
+        r = get_redis()
+        result = r.brpop("leads_to_enrich", timeout=1)
+        if not result:
+            return {
+                "done": True,
+                "processed": False,
+                "message": "Queue empty",
+                "failure_mode": "EMPTY",
+                "hint": "Queue leads first (Queue CSV) or check REDIS_URL and llens.",
+            }
+        _q, raw = result
+        lead_json = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        lead_data = json.loads(lead_json)
+        run_id = str(uuid.uuid4())
+        key = f"enrich:run:{run_id}"
+        r.hset(key, mapping={"status": "running", "progress": "{}", "created_at": str(time.time())})
+        r.expire(key, 3600)
+        asyncio.create_task(_background_run(run_id, lead_data))
+        return {"run_id": run_id, "status": "started", "message": "Processing"}
+    except Exception as e:
+        logger.exception("process_one_start failed: %s", e)
+        return {
+            "done": True,
+            "processed": False,
+            "error": str(e),
+            "failure_mode": "STARTUP",
+            "hint": f"Scrapegoat error: {str(e)[:150]}",
+        }
+
+
+def _hgetall_str(redis_client, key: str) -> dict:
+    raw = redis_client.hgetall(key) or {}
+    return {
+        (k.decode("utf-8") if isinstance(k, bytes) else k): (v.decode("utf-8") if isinstance(v, bytes) else v)
+        for k, v in raw.items()
+    }
+
+
+@app.get("/worker/process-one-status")
+async def process_one_status(run_id: str):
+    """Poll for run progress and result. status=running|done|error. progress=latest event; result=final when done."""
+    r = get_redis()
+    key = f"enrich:run:{run_id}"
+    data = _hgetall_str(r, key)
+    if not data:
+        raise HTTPException(status_code=404, detail="Run not found")
+    status = data.get("status") or "running"
+    try:
+        progress = json.loads(data.get("progress") or "{}")
+    except Exception:
+        progress = {}
+    result = None
+    if data.get("result"):
+        try:
+            result = json.loads(data.get("result"))
+        except Exception:
+            result = {"error": "result parse error"}
+    return {"status": status, "progress": progress, "result": result, "error": data.get("error"), "updated_at": data.get("updated_at")}
+
 
 # ============================================
 # DLQ (Dead Letter Queue) Endpoints

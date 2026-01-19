@@ -258,13 +258,19 @@ DEFAULT_HEADERS = {
     "Cache-Control": "no-cache",
 }
 
-# Chrome impersonation profiles for curl_cffi
+# Chrome impersonation profiles for curl_cffi (must match installed version)
+# curl_cffi 0.5.x: chrome99, chrome100, chrome101, chrome104, chrome107, chrome110 only
+# chrome116, chrome119, chrome120 require curl_cffi >= 0.6.0
+_IMPERSONATE_ALLOWED = {"chrome99", "chrome100", "chrome101", "chrome104", "chrome107", "chrome110"}
 IMPERSONATE_PROFILES = [
-    "chrome120",
-    "chrome119", 
-    "chrome116",
     "chrome110",
+    "chrome107",
+    "chrome104",
+    "chrome101",
 ]
+assert all(p in _IMPERSONATE_ALLOWED for p in IMPERSONATE_PROFILES), (
+    "IMPERSONATE_PROFILES must be <= chrome110 (chrome99–chrome110 only)"
+)
 
 
 class BaseScraper(ABC):
@@ -609,7 +615,39 @@ class BaseScraper(ABC):
                     except Exception as e:
                         self.logger.debug("Browser VLM captcha: %s", e)
 
-            # Tier 3: CapSolver
+            # Cloudflare challenge: solve, add cookies to context, reload
+            if ct == "cloudflare_challenge":
+                solver = get_captcha_solver()
+                if not solver.is_available():
+                    return False
+                try:
+                    from urllib.parse import urlparse
+                    result = await solver.solve_cloudflare_challenge(url, proxy=self.proxy)
+                    if not isinstance(result, dict):
+                        return False
+                    cookies = result.get("cookies") or []
+                    if not cookies and result.get("cookie"):
+                        domain = urlparse(url).netloc or ""
+                        for part in (result.get("cookie") or "").split(";"):
+                            part = part.strip()
+                            if "=" in part:
+                                n, v = part.split("=", 1)
+                                cookies.append({"name": n.strip(), "value": v.strip(), "domain": domain, "path": "/"})
+                    if not cookies:
+                        return False
+                    ctx = getattr(browser.page, "context", None) or getattr(browser, "context", None)
+                    if not ctx:
+                        return False
+                    await ctx.add_cookies(cookies)
+                    self.logger.info("🧩 [BROWSER] Cloudflare cookies injected, reloading")
+                    await browser.goto(url, wait_until="networkidle")
+                    await asyncio.sleep(2)
+                    return True
+                except Exception as e:
+                    self.logger.warning("⚠️ [BROWSER] Cloudflare solve failed: %s", e)
+                    return False
+
+            # Tier 3: CapSolver (recaptcha, hcaptcha, turnstile; require site_key)
             solver = get_captcha_solver()
             if not solver.is_available() or not sk:
                 return False
@@ -1116,13 +1154,31 @@ Do not include any explanation or markdown formatting - just the JSON object."""
         if found_keywords:
             self.logger.debug(f"✅ Success keywords found: {found_keywords}")
             return True
-        
-        # 2026 Upgrade: Vision-based verification (if enabled and screenshot available)
+
+        # "No results" pages: treat as empty, not as block (don't trigger CAPTCHA path)
+        empty_indicators = [
+            "no results", "no matches", "0 results", "didn't find",
+            "we couldn't find", "we could not find", "no records",
+        ]
+        if any(e in page_lower for e in empty_indicators):
+            self.logger.debug("📭 No results found (not a block)")
+            return False
+
+        # Vision-based verification (if enabled and screenshot available)
         if use_vision and screenshot_path:
-            return await self._verify_with_vision(screenshot_path, success_keywords)
-        
-        # If no success keywords found, likely empty/blocked
-        self.logger.warning("⚠️ No success keywords found - page may be empty or blocked")
+            if await self._verify_with_vision(screenshot_path, success_keywords):
+                return True
+            # Vision said no; fall through to CAPTCHA detect and final False
+
+        # CAPTCHA detection: wire into browser path (solver not invoked here; caller may retry with solver)
+        try:
+            cap = detect_captcha_in_html(page_text)
+            if cap:
+                self.logger.warning("🛡️ CAPTCHA detected in page (solver not wired for this path): %s", cap.get("type", "?"))
+        except Exception:
+            pass
+
+        self.logger.warning("⚠️ No success keywords - empty or soft block")
         return False
     
     async def _verify_with_vision(

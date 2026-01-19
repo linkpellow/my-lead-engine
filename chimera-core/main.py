@@ -258,7 +258,10 @@ async def run_worker_swarm(workers: list):
             json = None  # type: ignore[assignment]
 
         if not redis_url:
-            logger.warning("⚠️ Redis mission consumer disabled (missing REDIS_URL)")
+            logger.warning(
+                "⚠️ Redis mission consumer disabled (missing REDIS_URL). "
+                "Run ./scripts/railway-people-search-align.sh or set REDIS_URL in Railway (same as Scrapegoat)."
+            )
             while True:
                 await asyncio.sleep(60)
                 logger.debug("Worker swarm heartbeat...")

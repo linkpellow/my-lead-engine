@@ -14,6 +14,24 @@ const STREAM_TIMEOUT_MS = 330_000; // 330s so Chimera BRPOP 240s + pipeline over
 export async function POST() {
   const base = getScrapegoatBase();
   const url = `${base}/worker/process-one-stream`;
+
+  // Fail fast: if Scrapegoat is down or unreachable, surface in ~5s instead of 330s
+  try {
+    const healthRes = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) });
+    if (!healthRes.ok) throw new Error(`health ${healthRes.status}`);
+  } catch (he) {
+    const msg = he instanceof Error ? he.message : String(he);
+    return new Response(
+      JSON.stringify({
+        done: true,
+        processed: false,
+        error: `Scrapegoat unreachable (health failed in 5s): ${msg}. Check SCRAPEGOAT_API_URL and that Scrapegoat is running.`,
+        failure_mode: 'NETWORK',
+      }) + '\n',
+      { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } }
+    );
+  }
+
   const controller = new AbortController();
   const to = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS);
   let res: Response;
