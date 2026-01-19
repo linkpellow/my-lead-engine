@@ -83,6 +83,7 @@ Memory Query:
 |---------|------|
 | Start system | `start-triple-vessel.sh` |
 | Debug enrichment (logs+code, AI) | `.cursor/rules/debug-enrichment-with-ai.mdc` |
+| People-search readiness + test | `PEOPLE_SEARCH_CHECKLIST.md` § **Final readiness** |
 | gRPC contract | `@proto/chimera.proto` |
 | Local dev | `docker-compose.yml` |
 | Lead discovery | `brainscraper/app/components/LinkedInLeadGenerator.tsx` |

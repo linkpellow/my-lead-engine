@@ -1400,8 +1400,9 @@ class PhantomWorker:
         try:
             await self._page.wait_for_selector(name_selector, timeout=15000)
         except Exception as e:
-            self._emit_telemetry("pivot_selector_fail", f"{name_selector} {str(e)[:150]}")
-            logger.warning(f"⚠️ People-search input not found: {name_selector}")
+            hint = "Selector may be stale; update _MAGAZINE_TARGETS or run Dojo/seed (PEOPLE_SEARCH_CHECKLIST § DOM/selectors)."
+            self._emit_telemetry("pivot_selector_fail", f"{name_selector} {str(e)[:120]} | {hint}")
+            logger.warning(f"⚠️ People-search input not found: {name_selector} — {hint}")
 
         try:
             await self.safe_click(name_selector, intent=f"people_search_name:{name}")
@@ -1413,8 +1414,9 @@ class PhantomWorker:
             await self._page.fill(name_selector, full_name)
             await self._page.keyboard.press("Enter")
         except Exception as e:
-            self._emit_telemetry("pivot_fill_fail", str(e)[:150])
-            logger.warning(f"⚠️ People-search fill failed: {name_selector}")
+            hint = "Selector may be stale; update _MAGAZINE_TARGETS or run Dojo/seed (PEOPLE_SEARCH_CHECKLIST § DOM/selectors)."
+            self._emit_telemetry("pivot_fill_fail", f"{str(e)[:120]} | {hint}")
+            logger.warning(f"⚠️ People-search fill failed: {name_selector} — {hint}")
             return {"status": "failed", "error": f"pivot_fill_fail: {str(e)[:120]}", "target": name}
 
         if result_selector:
@@ -1424,7 +1426,8 @@ class PhantomWorker:
                 await self.safe_click(result_selector, intent=f"people_search_result:{name}")
                 self._emit_telemetry("pivot_result_ok", result_selector)
             except Exception as e:
-                self._emit_telemetry("pivot_result_fail", f"{result_selector} {str(e)[:150]}")
+                hint = "Selector may be stale; update _MAGAZINE_TARGETS or run Dojo/seed (PEOPLE_SEARCH_CHECKLIST § DOM/selectors)."
+                self._emit_telemetry("pivot_result_fail", f"{result_selector} {str(e)[:120]} | {hint}")
         else:
             # No result_selector: allow results page to load (ZabaSearch, SearchPeopleFree, ThatsThem, AnyWho)
             self._emit_telemetry("pivot_results_sleep", "2.5s (no result_selector)")

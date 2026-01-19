@@ -46,6 +46,9 @@ def _clean_env_value(value: Optional[str]) -> Optional[str]:
     # Guard against literal placeholder strings being injected into env.
     if v in {"${DATABASE_URL}", "${APP_DATABASE_URL}", "$DATABASE_URL", "$APP_DATABASE_URL"}:
         return None
+    # Unresolved Railway/Cross-service reference (e.g. ${{Postgres.DATABASE_URL}})
+    if "${{" in v and "}}" in v:
+        return None
     return v
 
 

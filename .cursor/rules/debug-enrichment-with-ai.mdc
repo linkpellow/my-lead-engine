@@ -88,7 +88,7 @@ Have the user (or you) @-mention these so the model has the real code:
 4. **Produce**
    - **Root cause:** Where did it halt and why? (e.g. "ChimeraStation BRPOP timeout because Chimera Core never LPUSHed to `chimera:results:{id}`; Core failed earlier with `pivot_fill_fail` on `input#name-search` at FastPeopleSearch.")
    - **Code location:** File, function, and (if useful) line or area. (e.g. `chimera-core/workers.py` `perform_enrichment_pivot`, `_MAGAZINE_TARGETS["FastPeopleSearch"]["name_selector"]` or Redis `blueprint:fastpeoplesearch.com` `name_selector`.)
-   - **Suggested fix:** Concrete change (selector update, env, or logic). For selector changes, prefer `_MAGAZINE_TARGETS` or the seed/blueprint; note that the site DOM may have changed.
+   - **Suggested fix:** Concrete change (selector update, env, or logic). For selector changes, prefer `_MAGAZINE_TARGETS` or the seed/blueprint; note that the site DOM may have changed. For `pivot_*_fail`, see **PEOPLE_SEARCH_CHECKLIST § DOM/selectors** (update `_MAGAZINE_TARGETS`, align seed/Dojo, re-seed).
    - **Confidence:** high / medium / low. If Core logs are missing and the halt is in Chimera, state "Low without chimera-core Railway logs."
 
 ---

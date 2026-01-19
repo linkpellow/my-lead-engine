@@ -409,9 +409,10 @@ async def run_worker_swarm(workers: list):
             except Exception:
                 pass
 
+            mission_timeout = int(os.getenv("MISSION_TIMEOUT_SEC", "200"))
             try:
-                logger.info(f"[ChimeraCore] executing: instruction={mission.get('instruction')} mission_id={mission_id}")
-                result = await worker.execute_mission(mission)
+                logger.info(f"[ChimeraCore] executing: instruction={mission.get('instruction')} mission_id={mission_id} timeout={mission_timeout}s")
+                result = await asyncio.wait_for(worker.execute_mission(mission), timeout=mission_timeout)
                 if mission.get("instruction") == "deep_search" and mission_id:
                     key = f"chimera:results:{mission_id}"
                     try:
@@ -448,6 +449,26 @@ async def run_worker_swarm(workers: list):
                         await asyncio.to_thread(r.expire, key, 86400)
                 except Exception:
                     pass
+            except asyncio.TimeoutError:
+                logger.warning(f"[ChimeraCore] mission timeout after {mission_timeout}s: mission_id={mission_id} — LPUSH failed so Scrapegoat BRPOP will not hang")
+                if mission.get("instruction") == "deep_search" and mission_id:
+                    key = f"chimera:results:{mission_id}"
+                    try:
+                        await asyncio.to_thread(
+                            r.lpush, key,
+                            json.dumps({"status": "failed", "error": f"mission_timeout_{mission_timeout}s", "mission_id": mission_id}),
+                        )
+                    except Exception as lerr:
+                        logger.warning(f"LPUSH {key} on timeout failed: {lerr}")
+                try:
+                    await asyncio.to_thread(r.hset, f"mission:{mission_id}", mapping={
+                        "status": "timeout", "trauma_signals": json.dumps(["MISSION_TIMEOUT"]),
+                        "trauma_details": f"mission_timeout_{mission_timeout}s",
+                    })
+                    await asyncio.to_thread(r.expire, f"mission:{mission_id}", 86400)
+                except Exception:
+                    pass
+                continue
             except Exception as e:
                 logger.error(f"[ChimeraCore] mission execution failed: mission_id={mission_id} error={e}")
                 if mission.get("instruction") == "deep_search" and mission_id:

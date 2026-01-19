@@ -41,7 +41,10 @@ Use this with the CLI to confirm everything is aligned so https://brainscraper.i
 | Var | Required | Used by |
 |-----|----------|---------|
 | `REDIS_URL` or `APP_REDIS_URL` | Yes | BRPOP chimera:missions, LPUSH chimera:results, mission:{id} updates, SYSTEM_STATE:PAUSED |
+| `DATABASE_URL` or `APP_DATABASE_URL` | Yes | `db_bridge.test_db_connection()` on boot; worker **exits with 1** if DB fails |
 | `CHIMERA_BRAIN_ADDRESS` | Yes | gRPC to Brain |
+| `CAPSOLVER_API_KEY` | For people-search | `capsolver`, `_detect_and_solve_captcha` (reCAPTCHA, Turnstile, hCaptcha) |
+| `DECODO_API_KEY` or `PROXY_URL` | For people-search | `network.get_proxy_config` (sticky mobile IP; Cloudflare-heavy sites) |
 | `BRAINSCRAPER_URL` | For telemetry | telemetry_client → POST /api/v2-pilot/telemetry |
 
 ### Chimera Brain (Railway)
@@ -61,7 +64,9 @@ Use this with the CLI to confirm everything is aligned so https://brainscraper.i
 | `GET /api/v2-pilot/mission-status` | Redis `KEYS mission:*`, `HGETALL` | TOTAL MISSIONS, QUEUED, PROCESSING, COMPLETED, FAILED, Mission Log |
 | `GET /api/enrichment/queue-status` | Redis `LLEN leads_to_enrich`, `LLEN failed_leads` | In queue, Failed (DLQ); no Scrapegoat call |
 | `POST /api/enrichment/process-one` | Scrapegoat `POST /worker/process-one` | BRPOP leads_to_enrich, run pipeline |
+| `POST /api/enrichment/process-one-stream` | Scrapegoat `POST /worker/process-one-stream` | Same as process-one; streams NDJSON (step, station, substep, log) then {done, success, steps, logs}. **v2-pilot Enrich uses this.** |
 | `POST /api/enrichment/queue-csv` | Redis `LPUSH leads_to_enrich` (redisBridge) | Needs REDIS_URL |
+| `POST /api/enrichment/queue-clear` | Redis `DEL leads_to_enrich`, `DEL failed_leads` | v2-pilot Clear button; needs REDIS_URL |
 | `POST /api/v2-pilot/fire-swarm` | Redis `LPUSH chimera:missions`, `HSET mission:{id}` | Needs REDIS_URL |
 | `POST /api/v2-pilot/telemetry` | Redis `HSET mission:{id}` | Chimera Core when BRAINSCRAPER_URL set |
 | `GET /api/load-enriched-results` | Postgres + `enriched-all-leads.json` | /enriched; needs DATABASE_URL for queue-based results |
@@ -88,6 +93,7 @@ test -f brainscraper/app/api/v2-pilot/mission-status/route.ts && \
 test -f brainscraper/app/api/v2-pilot/telemetry/route.ts && \
 test -f brainscraper/app/api/v2-pilot/quick-search/route.ts && \
 test -f brainscraper/app/api/enrichment/process-one/route.ts && \
+test -f brainscraper/app/api/enrichment/process-one-stream/route.ts && \
 test -f brainscraper/app/api/enrichment/queue-status/route.ts && \
 test -f brainscraper/app/api/enrichment/queue-csv/route.ts && \
 echo "BrainScraper v2-pilot + enrichment routes OK"
@@ -144,6 +150,7 @@ If you run a **separate Scrapegoat Worker** service (`start_redis_worker.py`), g
 | Var | Required | Code ref | CLI verified |
 |-----|----------|----------|--------------|
 | `REDIS_URL` or `APP_REDIS_URL` | Yes | `main.py` (REDIS_URL, APP_REDIS_URL, REDIS_BRIDGE_URL, REDIS_CONNECTION_URL), `workers.py`, `capsolver.py`, `visibility_check.py` | ✓ REDIS_URL |
+| `DATABASE_URL` or `APP_DATABASE_URL` | Yes | `main.py` → `db_bridge.test_db_connection()` on boot; worker **exits with 1** if DB fails | ✓ set |
 | `CHIMERA_BRAIN_ADDRESS` | Yes | `main.py` gRPC (default `http://chimera-brain.railway.internal:50051`) | ✓ set |
 | `BRAINSCRAPER_URL` | For telemetry | `main.py`, `telemetry_client` → `POST /api/v2-pilot/telemetry` | ✓ set |
 | `SCRAPEGOAT_URL` or `DOJO_TRAUMA_URL` | Optional | `workers._report_trauma`, `_report_coordinate_drift` → Dojo `/api/dojo/trauma`, `/api/dojo/coordinate-drift` | ✓ `SCRAPEGOAT_URL` added |

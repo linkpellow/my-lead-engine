@@ -472,8 +472,12 @@ export default function SovereignPilotPage() {
     setEnrichSubsteps([]);
     log(`[${t()}] Enrich started (stream). POST /api/enrichment/process-one-stream`);
 
+    const ENRICH_FETCH_TIMEOUT_MS = 330_000; // 330s so Chimera BRPOP 240s + pipeline can finish
+    const abort = typeof AbortSignal !== 'undefined' && AbortSignal.timeout
+      ? AbortSignal.timeout(ENRICH_FETCH_TIMEOUT_MS)
+      : undefined;
     try {
-      const r = await fetch('/api/enrichment/process-one-stream', { method: 'POST' });
+      const r = await fetch('/api/enrichment/process-one-stream', { method: 'POST', signal: abort });
       if (!r.ok || !r.body) {
         const text = await r.text();
         throw new Error(`HTTP ${r.status}: ${text || r.statusText}`);
@@ -589,14 +593,14 @@ export default function SovereignPilotPage() {
         error_name: err.name,
         diagnostic_log: diag,
         failure_mode: 'NETWORK',
-        hint: 'Check SCRAPEGOAT_API_URL, network, CORS. If Chimera runs long, proxy may close the connection.',
+        hint: 'Check SCRAPEGOAT_API_URL, network, CORS. If failure occurs after ~60–120s: platform (Vercel/Railway) or proxy may be closing the connection—ensure maxDuration ≥ 300 and no proxy timeout < 300s. If Chimera runs long, chimera-core must LPUSH so Scrapegoat does not BRPOP 240s; check chimera-core logs.',
       };
       setLastEnrichRun(run as any);
       persistLastRun(run);
       setShowLastRunLogs(true);
       setEnrichStatus('Request failed');
-      const isFetchFailed = /failed to fetch|TypeError/i.test(String(run.error)) || run.error_name === 'TypeError';
-      alert(`Error: ${run.error}${isFetchFailed ? '\n\nIf the pipeline runs many minutes (Chimera), the connection may have been closed by a proxy. Check Scrapegoat and chimera-core logs.' : ''}\n\nSee Diagnostic log and Download logs.`);
+      const isFetchFailed = /failed to fetch|TypeError|network error/i.test(String(run.error)) || run.error_name === 'TypeError';
+      alert(`Error: ${run.error}${isFetchFailed ? '\n\nIf this occurs after ~60–120s: platform or proxy may be closing the connection (set maxDuration ≥ 300, no proxy timeout < 300s). Also check: chimera-core running and same Redis; chimera-core Railway logs for pivot/CAPTCHA/VLM.' : ''}\n\nSee Diagnostic log and Download logs.`);
     } finally {
       setEnrichStatus(null);
       setEnrichProgress(null);
