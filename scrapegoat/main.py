@@ -181,12 +181,51 @@ async def process_one():
         }
 
 
+def _infer_failure(success: bool, steps: list, recent: list) -> tuple:
+    """From steps + recent substeps, infer failure_mode, failure_at, hint. Returns (mode, at, hint)."""
+    if success:
+        return (None, None, "")
+    substeps = [e for e in recent if isinstance(e, dict)]
+    for ev in reversed(substeps):
+        substep = (ev.get("substep") or "").lower()
+        detail = (ev.get("detail") or "")[:300]
+        station = (ev.get("station") or "").lower()
+
+        if "mapping_required" in substep:
+            domain = detail or "unknown"
+            return ("MAPPING", "BlueprintLoader", f"Run POST /api/blueprints/seed-magazine or add blueprint for {domain}")
+        if "pivot_selector_fail" in substep or "pivot_result_fail" in substep:
+            return ("SELECTOR", "ChimeraCore", f"Update name_selector/result_selector for people-search. {detail[:120]}")
+        if "capsolver_fail" in substep:
+            return ("CAPTCHA", "ChimeraCore", "Check CAPSOLVER_API_KEY and balance; chimera-core logs.")
+        if "vlm_fail" in substep or "captcha_fail" in substep:
+            return ("CAPTCHA", "ChimeraCore", "VLM or CapSolver failed; Chimera Brain and CAPSOLVER_API_KEY.")
+        if substep == "timeout" and "chimera" in station:
+            any_captcha = any("captcha" in str(e.get("substep", "")).lower() or "captcha" in str(e.get("detail", "")).lower() for e in substeps)
+            return ("CORE_TIMEOUT", "ChimeraCore", "Core 120s timeout. Likely CAPTCHA/slow site; check chimera-core and CapSolver." if any_captcha else "Core 120s timeout. Is chimera-core running and same Redis?")
+        if "parse_fail" in substep or "core_failed" in substep or "core_bad_type" in substep:
+            return ("CORE_RESULT", "ChimeraStation", f"Core bad/failed result. {detail[:120]}")
+
+    for s in (steps or []):
+        if (s.get("status") or "") == "fail":
+            st = s.get("station") or "?"
+            err = (s.get("error") or "")[:200]
+            if "Blueprint" in st:
+                return ("MAPPING", st, f"BlueprintLoader failed: {err}. Run /api/blueprints/seed-magazine.")
+            if "Chimera" in st:
+                return ("CORE", st, f"ChimeraStation failed: {err}. Check Core and Redis.")
+            return ("DOWNSTREAM", st, f"{st} failed: {err}")
+    return ("UNKNOWN", None, "See Diagnostic and Download logs.")
+
+
 async def _process_one_stream_gen(lead_data: dict, log_buffer: list):
-    """Async generator yielding NDJSON lines: progress events, then {done, success, steps, logs}."""
+    """Async generator yielding NDJSON lines: progress events, then {done, success, steps, logs, failure_mode?, failure_at?, hint?}."""
     from app.workers.redis_queue_worker import process_lead_with_steps
 
     progress_queue = queue.Queue()
     task = asyncio.create_task(asyncio.to_thread(process_lead_with_steps, lead_data, log_buffer, progress_queue))
+    recent: list = []
+    cap = 100
 
     while True:
         try:
@@ -196,19 +235,24 @@ async def _process_one_stream_gen(lead_data: dict, log_buffer: list):
                 break
             await asyncio.sleep(0.05)
             continue
+        recent.append(ev)
+        if len(recent) > cap:
+            recent.pop(0)
         yield json.dumps(ev) + "\n"
 
-    # Drain any remaining progress events
     while True:
         try:
             ev = progress_queue.get_nowait()
+            recent.append(ev)
+            if len(recent) > cap:
+                recent.pop(0)
             yield json.dumps(ev) + "\n"
         except queue.Empty:
             break
 
     try:
         ok, steps = task.result()
-        yield json.dumps({
+        out = {
             "done": True,
             "processed": True,
             "success": ok,
@@ -216,18 +260,30 @@ async def _process_one_stream_gen(lead_data: dict, log_buffer: list):
             "linkedin_url": lead_data.get("linkedinUrl"),
             "steps": steps,
             "logs": log_buffer,
-        }) + "\n"
+        }
+        fm, fa, h = _infer_failure(ok, steps, recent)
+        if fm:
+            out["failure_mode"] = fm
+            out["failure_at"] = fa
+            out["hint"] = h
+        yield json.dumps(out) + "\n"
     except Exception as e:
         from loguru import logger
         logger.exception("process_one_stream pipeline error: %s", e)
-        yield json.dumps({
+        out = {
             "done": True,
             "processed": True,
             "success": False,
             "error": str(e),
             "steps": [],
             "logs": log_buffer,
-        }) + "\n"
+        }
+        fm, fa, h = _infer_failure(False, [], recent)
+        if fm:
+            out["failure_mode"] = fm
+            out["failure_at"] = fa
+            out["hint"] = h
+        yield json.dumps(out) + "\n"
 
 
 @app.post("/worker/process-one-stream")
@@ -239,7 +295,10 @@ async def process_one_stream():
         result = r.brpop("leads_to_enrich", timeout=1)
         if not result:
             return StreamingResponse(
-                iter([json.dumps({"done": True, "processed": False, "message": "Queue empty"}) + "\n"]),
+                iter([json.dumps({
+                    "done": True, "processed": False, "message": "Queue empty",
+                    "failure_mode": "EMPTY", "hint": "Queue leads first (Queue CSV) or check REDIS_URL and llens.",
+                }) + "\n"]),
                 media_type="application/x-ndjson",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -256,7 +315,10 @@ async def process_one_stream():
         from loguru import logger
         logger.exception("process_one_stream failed: %s", e)
         return StreamingResponse(
-            iter([json.dumps({"done": True, "processed": False, "error": str(e)}) + "\n"]),
+            iter([json.dumps({
+                "done": True, "processed": False, "error": str(e),
+                "failure_mode": "STARTUP", "hint": f"Scrapegoat error before pipeline: {str(e)[:150]}",
+            }) + "\n"]),
             media_type="application/x-ndjson",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

@@ -97,6 +97,10 @@ export default function SovereignPilotPage() {
   const [enrichProgress, setEnrichProgress] = useState<{ step: number; total: number; pct: number; station: string; status: string; message?: string; duration_ms?: number; error?: string } | null>(null);
   const [enrichSteps, setEnrichSteps] = useState<Array<{ station: string; status: string; message?: string; duration_ms?: number; error?: string }>>([]);
   const [enrichSubsteps, setEnrichSubsteps] = useState<Array<{ station: string; substep: string; detail: string }>>([]);
+  const [diagnosticOnlyFailures, setDiagnosticOnlyFailures] = useState(false);
+  const diagnosticListRef = useRef<HTMLDivElement | null>(null);
+  const [waitingCoreSince, setWaitingCoreSince] = useState<number | null>(null);
+  const [coreStaleHint, setCoreStaleHint] = useState(false);
   const [lastEnrichRun, setLastEnrichRun] = useState<{
     at: string;
     processed?: boolean;
@@ -112,6 +116,9 @@ export default function SovereignPilotPage() {
     http_statusText?: string;
     error_name?: string;
     error_cause?: string;
+    failure_mode?: string;
+    failure_at?: string;
+    hint?: string;
   } | null>(null);
   const [showLastRunLogs, setShowLastRunLogs] = useState(false);
   const [isDownloadingLogs, setIsDownloadingLogs] = useState(false);
@@ -272,6 +279,16 @@ export default function SovereignPilotPage() {
       // ignore
     }
   }, []);
+
+  // While stuck at "waiting_core" with no Core telemetry for 25s, show stale hint
+  useEffect(() => {
+    if (!isEnriching || waitingCoreSince == null) return;
+    const started = waitingCoreSince;
+    const t = setInterval(() => {
+      if (Date.now() - started > 25000) setCoreStaleHint(true);
+    }, 5000);
+    return () => clearInterval(t);
+  }, [isEnriching, waitingCoreSince]);
 
   // Fire 25-lead batch to Chimera swarm
   const handleFireSwarm = async () => {
@@ -508,7 +525,15 @@ export default function SovereignPilotPage() {
             break;
           }
           if (ev.substep != null) {
-            setEnrichSubsteps((s) => [...s, { station: (ev.station as string) ?? '?', substep: String(ev.substep), detail: String(ev.detail ?? '') }]);
+            const st = (ev.station as string) ?? '';
+            const sb = String(ev.substep);
+            setEnrichSubsteps((s) => [...s, { station: st, substep: sb, detail: String(ev.detail ?? '') }]);
+            if (st === 'Chimera' && sb === 'waiting_core') {
+              setWaitingCoreSince(Date.now());
+            }
+            if (st === 'Chimera' && /^(deep_search_start|pivot_|captcha_|capsolver_|vlm_|extract_)/.test(sb)) {
+              setWaitingCoreSince(null);
+            }
           }
           if (ev.step != null && ev.total != null) {
             setEnrichProgress({
@@ -559,6 +584,8 @@ export default function SovereignPilotPage() {
         error: err.message || 'Unknown',
         error_name: err.name,
         diagnostic_log: diag,
+        failure_mode: 'NETWORK',
+        hint: 'Check SCRAPEGOAT_API_URL, network, CORS. If Chimera runs long, proxy may close the connection.',
       };
       setLastEnrichRun(run as any);
       persistLastRun(run);
@@ -571,6 +598,8 @@ export default function SovereignPilotPage() {
       setEnrichProgress(null);
       setEnrichSteps([]);
       setEnrichSubsteps([]);
+      setWaitingCoreSince(null);
+      setCoreStaleHint(false);
       setIsEnriching(false);
     }
   };
@@ -907,8 +936,29 @@ export default function SovereignPilotPage() {
                 {enrichSubsteps.length > 0 && (
                   <div className="mt-2 pt-2 border-t border-amber-500/30">
                     <p className="text-[10px] font-bold text-amber-400 mb-1">Diagnostic (root cause) — where the bot is:</p>
-                    <div className="space-y-0.5 max-h-40 overflow-y-auto font-mono text-[10px]">
-                      {enrichSubsteps.map((x, i) => (
+                    {coreStaleHint && (
+                      <div className="mb-2 p-1.5 rounded bg-red-950/40 border border-red-500/60 text-[10px] text-red-300">
+                        No events from Chimera Core for 25s — is it running and using the same Redis? Check chimera-core logs and REDIS_URL.
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3 mb-1">
+                      <label className="flex items-center gap-1 text-[10px] text-gray-400 cursor-pointer">
+                        <input type="checkbox" checked={diagnosticOnlyFailures} onChange={(e) => setDiagnosticOnlyFailures(e.target.checked)} />
+                        Show only failures
+                      </label>
+                      <button
+                        type="button"
+                        className="text-[10px] text-amber-400 hover:underline"
+                        onClick={() => diagnosticListRef.current?.querySelector('.text-red-400')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}
+                      >
+                        Jump to first failure
+                      </button>
+                    </div>
+                    <div ref={diagnosticListRef} className="space-y-0.5 max-h-40 overflow-y-auto font-mono text-[10px]">
+                      {(diagnosticOnlyFailures
+                        ? enrichSubsteps.filter((x) => /fail|timeout|capsolver_fail|vlm_fail|selector_fail|mapping_required|parse_fail|core_failed|pivot_fill_fail|pivot_result_fail/i.test(x.substep + x.detail))
+                        : enrichSubsteps
+                      ).map((x, i) => (
                         <div key={i} className={`flex gap-1 break-all ${/fail|timeout|capsolver_fail|vlm_fail|selector_fail|mapping_required|parse_fail|core_failed/i.test(x.substep + x.detail) ? 'text-red-400' : 'text-cyan-300/90'}`}>
                           <span className="shrink-0">{x.station}</span>
                           <span>—</span>
@@ -921,6 +971,27 @@ export default function SovereignPilotPage() {
               </div>
             )}
             <p className="text-[10px] text-gray-500 mt-1">Can take 1–5 min (Chimera). Full logs in Console (filter <code className="bg-black/60 px-0.5">[Enrich]</code>) and below. Last run saved across refresh.</p>
+            {lastEnrichRun?.failure_mode && (
+              <div className="mb-2 p-2 rounded border border-amber-500/80 bg-amber-950/20">
+                <p className="text-xs font-bold text-amber-400 mb-1">Cause (inferred)</p>
+                <p className="text-[10px] text-amber-200/90">
+                  <span className="font-medium">{lastEnrichRun.failure_mode}</span>
+                  {lastEnrichRun.failure_at && <span className="text-amber-400/80"> @ {lastEnrichRun.failure_at}</span>}
+                </p>
+                {lastEnrichRun.hint && (
+                  <p className="text-[10px] text-gray-300 mt-1">{lastEnrichRun.hint}</p>
+                )}
+                {lastEnrichRun.hint && (
+                  <button
+                    type="button"
+                    onClick={() => { navigator.clipboard?.writeText(lastEnrichRun!.hint || ''); }}
+                    className="mt-1 text-[10px] text-cyan-400 hover:underline"
+                  >
+                    Copy hint
+                  </button>
+                )}
+              </div>
+            )}
             {(() => {
               const issues: { where: string; message: string }[] = [];
               if (lastEnrichRun?.error) {
