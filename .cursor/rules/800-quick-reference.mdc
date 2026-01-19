@@ -82,6 +82,7 @@ Memory Query:
 | Purpose | File |
 |---------|------|
 | Start system | `start-triple-vessel.sh` |
+| Debug enrichment (logs+code, AI) | `.cursor/rules/debug-enrichment-with-ai.mdc` |
 | gRPC contract | `@proto/chimera.proto` |
 | Local dev | `docker-compose.yml` |
 | Lead discovery | `brainscraper/app/components/LinkedInLeadGenerator.tsx` |

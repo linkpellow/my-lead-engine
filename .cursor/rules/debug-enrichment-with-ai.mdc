@@ -1,0 +1,155 @@
+---
+description: "Debug Enrichment with AI: analyze chimera-enrichment-logs or Copy-for-Cursor paste using logs + code. Use when the user pastes enrichment logs, attaches chimera-enrichment-logs-*.json, or asks to analyze/fix people-search or Chimera pipeline failures."
+---
+
+# Debug Enrichment with AI (Logs + Code)
+
+**Purpose:** Use an LLM with local access to the codebase to diagnose enrichment failures by correlating logs with the exact code paths. Supports people-search across ThatsThem, SearchPeopleFree, ZabaSearch, FastPeopleSearch, TruePeopleSearch, AnyWho.
+
+**When to use this rule:**
+- User pastes `chimera-enrichment-logs-*.json` (from v2-pilot Download logs) or the Copy-for-Cursor block.
+- User says "analyze these enrichment logs", "debug this Chimera run", "why did people-search fail", or similar.
+- User attaches or pastes content that includes: `errors_summary`, `lastEnrichRun`, `enrichment.lastEnrichRun`, `all_log_lines`, or `--- v2-pilot: paste into Cursor to debug Chimera enrichment ---`.
+
+---
+
+## 1. Load the logs
+
+- **From JSON (Download):** Parse `enrichment.lastEnrichRun`, `errors_summary`, `bottleneck_hint`, `all_log_lines`. If `chimera.missions` or `chimera.trauma_signals` exist, use them.
+- **From Copy-for-Cursor paste:** Use `errors_summary`, `bottleneck_hint`, and the `last run` line. There are no `all_log_lines` in the short paste; if the user also attached the Download JSON, use that for full logs.
+- **Chimera Core Railway logs:** If the user pastes or attaches chimera-core stdout (e.g. last 50–100 lines), use them. They contain `[ChimeraCore]` lines (e.g. `pivot_fill_fail`, `pivot_selector_fail`, `capsolver_*`, `extract_*`) that Scrapegoat does not see.
+
+---
+
+## 2. Log → code map
+
+Use this to select which files and areas to load. **Always @-mention the files** so the model sees the real code.
+
+| Log / failure_mode / hint | Files and areas |
+|---------------------------|-----------------|
+| `pivot_fill_fail`, `pivot_selector_fail`, `pivot_result_fail`, `pivot_results_sleep`, `pivot_return_fail` | `chimera-core/workers.py`: `perform_enrichment_pivot`, `_MAGAZINE_TARGETS` |
+| `pivot_no_target`, `pivot_skip`, `missing_name` | `chimera-core/workers.py`: `_select_people_search_target`, `perform_enrichment_pivot` (full_name); `scrapegoat/app/pipeline/stations/enrichment.py`: ChimeraStation name_check, IdentityStation |
+| `waiting_core`, `timeout`, `got_result`, `core_failed`, `parse_fail`, `core_bad_type` | `scrapegoat/app/pipeline/stations/enrichment.py`: ChimeraStation `process` (BRPOP, mission push, result parse); `chimera-core/main.py`: deep_search LPUSH/BRPOP, `execute_mission`, exception handler |
+| `redis_miss`, `mapping_required`, `redis_hit`, `provider_selected`, `auto_map_attempt` | `scrapegoat/app/pipeline/stations/blueprint_loader.py`; `scrapegoat/scripts/seed_magazine_blueprints.py`; `scrapegoat/main.py` (startup `SEED_MAGAZINE_ON_STARTUP` seed) |
+| `name_check_fail`, Identity `fail`, `missing firstName or lastName` | `scrapegoat/app/pipeline/stations/enrichment.py`: IdentityStation; `scrapegoat/app/enrichment/identity_resolution.py`; `scrapegoat/app/pipeline/engine.py` (name normalization) |
+| `captcha_detected`, `capsolver_*`, `vlm_*`, `captcha_fail` | `chimera-core/workers.py`: `_detect_and_solve_captcha`; `chimera-core/capsolver.py` |
+| `extract_start`, `extract_done`, `extract_result`, `vision_confidence` | `chimera-core/workers.py`: `_run_deep_search`, `_deep_search_extract_via_vision`; Chimera Brain gRPC/process_vision |
+| `failure_mode: MAPPING` | `scrapegoat/.../blueprint_loader.py`, `scrapegoat/scripts/seed_magazine_blueprints.py`, `scrapegoat/main.py` startup seed, `_PROVIDER_TO_DOMAIN` |
+| `failure_mode: CORE` or `CORE_RESULT` | `chimera-core/workers.py` (pivot, CAPTCHA, extract); `chimera-core/main.py` (LPUSH `chimera:results:{id}`); `scrapegoat/.../enrichment.py` ChimeraStation |
+| `failure_mode: NETWORK` | `scrapegoat/main.py`: `_process_one_stream_gen`, `process-one-stream`; `SCRAPEGOAT_API_URL`, CORS, timeouts; Chimera run duration vs proxy keep-alive |
+
+---
+
+## 3. @-mention list (minimal for most runs)
+
+Have the user (or you) @-mention these so the model has the real code:
+
+```
+@chimera-core/workers.py
+@scrapegoat/app/pipeline/stations/enrichment.py
+@scrapegoat/app/pipeline/stations/blueprint_loader.py
+@chimera-core/main.py
+@scrapegoat/main.py
+```
+
+**If `mapping_required`, `redis_miss`, or `failure_mode: MAPPING`:**
+
+```
+@scrapegoat/scripts/seed_magazine_blueprints.py
+```
+
+**If CAPTCHA or `capsolver_*` / `vlm_*` in logs:**
+
+```
+@chimera-core/capsolver.py
+```
+
+**If Identity or name_check_fail:**
+
+```
+@scrapegoat/app/enrichment/identity_resolution.py
+@scrapegoat/app/pipeline/engine.py
+```
+
+---
+
+## 4. Structured workflow for the model
+
+1. **Parse and summarize**
+   - From logs: `failure_mode`, `hint`, `errors_summary`, `bottleneck_hint`, and the last/halting `step` or `substep` (e.g. `waiting_core`, `pivot_fill_fail`, `timeout`, `core_failed`).
+   - From `lastEnrichRun` or Copy block: `steps` (station, status, duration_ms, error), `logs` (pipeline log lines).
+
+2. **Map to code**
+   - Use the Log→code map above. For the halting event or `failure_mode`, identify the primary file(s) and symbols (e.g. `workers.perform_enrichment_pivot`, `enrichment.py` ChimeraStation `process`, `main.py` deep_search LPUSH).
+
+3. **Read the code**
+   - With the @-mentioned files in context, locate the exact branch: e.g. `pivot_fill_fail` → `perform_enrichment_pivot` → `await self._page.fill(name_selector, full_name)` and the `_MAGAZINE_TARGETS` or Redis blueprint override for `name_selector`. Cite file and function/line.
+
+4. **Produce**
+   - **Root cause:** Where did it halt and why? (e.g. "ChimeraStation BRPOP timeout because Chimera Core never LPUSHed to `chimera:results:{id}`; Core failed earlier with `pivot_fill_fail` on `input#name-search` at FastPeopleSearch.")
+   - **Code location:** File, function, and (if useful) line or area. (e.g. `chimera-core/workers.py` `perform_enrichment_pivot`, `_MAGAZINE_TARGETS["FastPeopleSearch"]["name_selector"]` or Redis `blueprint:fastpeoplesearch.com` `name_selector`.)
+   - **Suggested fix:** Concrete change (selector update, env, or logic). For selector changes, prefer `_MAGAZINE_TARGETS` or the seed/blueprint; note that the site DOM may have changed.
+   - **Confidence:** high / medium / low. If Core logs are missing and the halt is in Chimera, state "Low without chimera-core Railway logs."
+
+---
+
+## 5. Prompt template (for the model or user)
+
+Use this when invoking analysis:
+
+```
+You are debugging the people-search enrichment pipeline (Scrapegoat + Chimera Core). Targets: ThatsThem, SearchPeopleFree, ZabaSearch, FastPeopleSearch, TruePeopleSearch, AnyWho.
+
+**Logs / run:**
+<paste errors_summary, bottleneck_hint, last run line, and relevant all_log_lines or steps>
+
+**failure_mode:** <value if present>
+**hint:** <value if present>
+
+**Chimera Core logs (if provided):** <paste>
+
+**Tasks:**
+1. Root cause: Where did it halt and why?
+2. Code location: File, function, and symbol (e.g. selector key, Redis key).
+3. Suggested fix: Selector change, env, or logic. Cite code.
+4. Confidence: high / medium / low.
+
+The @-mentioned files are the relevant code. Use the Log→code map in the rule to connect logs to code paths.
+```
+
+---
+
+## 6. People-search and Chimera Core
+
+- Scrapegoat only sees: ChimeraStation’s `waiting_core`, `timeout`, `got_result`, `core_failed`, `parse_fail`, and telemetry from `chimera:telemetry:{id}` (e.g. `pivot_*`, `captcha_*`, `extract_*`). It does **not** see Chimera Core’s stdout.
+- For `timeout` or `core_failed` without a clear `error` string, **chimera-core Railway logs** (last 50–100 lines) are necessary to see: `[ChimeraCore] pivot_fill_fail`, `capsolver_fail`, `pivot_selector_fail`, navigation errors, etc.
+- The 6 sites’ selectors live in: `chimera-core/workers.py` `_MAGAZINE_TARGETS` and, when present, Redis `blueprint:{domain}` (seeded by `scrapegoat/scripts/seed_magazine_blueprints.py` or Scrapegoat startup with `SEED_MAGAZINE_ON_STARTUP=1`).
+
+---
+
+## 7. Output format
+
+When you produce the diagnosis, use:
+
+```markdown
+## Root cause
+<1–3 sentences>
+
+## Code location
+- **File:** `path`
+- **Symbol/area:** function name, dict key, or Redis key
+
+## Suggested fix
+<concrete change; cite code>
+
+## Confidence
+high | medium | low
+```
+
+---
+
+## 8. References
+
+- **Pipeline flow:** `.cursor/rules/600-component-relationships.mdc` (Pattern 1, 2; ChimeraStation ↔ Core).
+- **People-search setup:** `PEOPLE_SEARCH_CHECKLIST.md`, `V2_PILOT_RAILWAY_ALIGNMENT.md` §8.
+- **Structured logging:** `scrapegoat/app/pipeline/logging_util.py`, `chimera-core/workers._emit_telemetry`; log format `[Component] action: detail`.

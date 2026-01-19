@@ -24,6 +24,7 @@ from loguru import logger
 
 # Import new pipeline engine
 from app.pipeline.loader import create_pipeline, get_default_pipeline_name
+from app.pipeline.logging_util import pipeline_log
 from app.pipeline.types import StopCondition
 
 # Configuration
@@ -113,6 +114,10 @@ async def process_lead_async_with_steps(
     log_buffer: if provided, engine adds recent_logs to failed steps for where/why.
     progress_queue: if provided (queue.Queue), engine puts step events for streaming UX."""
     steps: List[Dict[str, Any]] = []
+    pipeline_log(
+        progress_queue, "Pipeline", "stream_start",
+        f"lead name={repr((lead_data.get('name') or '')[:50]) or '?'} linkedin={repr((lead_data.get('linkedinUrl') or '')[:60]) or '?'}",
+    )
     try:
         engine = get_pipeline_engine()
         enriched_data = await engine.run(lead_data, step_collector=steps, log_buffer=log_buffer, progress_queue=progress_queue)

@@ -17,6 +17,7 @@ import redis
 from loguru import logger
 
 from app.pipeline.exceptions import ChimeraEnrichmentError
+from app.pipeline.logging_util import station_emit
 from app.pipeline.station import PipelineStation
 from app.pipeline.types import PipelineContext, StopCondition
 from app.pipeline.router import (
@@ -143,17 +144,17 @@ class IdentityStation(PipelineStation):
     
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
         """Resolve identity from raw lead data."""
+        pq = getattr(ctx, "progress_queue", None)
+        station_emit(pq, "Identity Resolution", "start", f"input keys={list(ctx.data.keys())[:12] if isinstance(ctx.data, dict) else '?'} name={bool(ctx.data.get('name'))} linkedinUrl={bool(ctx.data.get('linkedinUrl'))}")
         try:
             result = resolve_identity(ctx.data)
             if not result.get("firstName") or not result.get("lastName"):
-                logger.warning(
-                    "Identity Resolution: missing firstName or lastName (input keys=%s)",
-                    list(ctx.data.keys()) if isinstance(ctx.data, dict) else "?",
-                )
+                station_emit(pq, "Identity Resolution", "fail", f"missing firstName or lastName; resolved firstName={repr(result.get('firstName'))} lastName={repr(result.get('lastName'))}")
                 return {}, StopCondition.FAIL
-            logger.info("✅ Identity resolved: %s %s", result.get("firstName"), result.get("lastName"))
+            station_emit(pq, "Identity Resolution", "resolved", f"firstName={result.get('firstName')} lastName={result.get('lastName')} fullName={repr((result.get('fullName') or '')[:40])}")
             return result, StopCondition.CONTINUE
         except Exception as e:
+            station_emit(pq, "Identity Resolution", "error", f"resolve_identity raised: {str(e)[:200]}")
             logger.exception(
                 "Identity Resolution: failed during resolve_identity (input keys=%s): %s",
                 list(ctx.data.keys()) if isinstance(ctx.data, dict) else "?",
@@ -206,12 +207,7 @@ class ChimeraStation(PipelineStation):
         return redis.from_url(url)
 
     def _emit(self, ctx: PipelineContext, substep: str, detail: str) -> None:
-        q = getattr(ctx, "progress_queue", None)
-        if q is not None:
-            try:
-                q.put_nowait({"station": "Chimera", "substep": substep, "detail": detail})
-            except Exception:
-                pass
+        station_emit(getattr(ctx, "progress_queue", None), "Chimera", substep, detail)
 
     async def _consume_telemetry(self, mission_id: str, r: redis.Redis, ctx: PipelineContext, stop: asyncio.Event) -> None:
         key = f"chimera:telemetry:{mission_id}"
@@ -240,8 +236,9 @@ class ChimeraStation(PipelineStation):
         if not name:
             name = f"{ctx.data.get('firstName') or ''} {ctx.data.get('lastName') or ''}".strip()
         if not name:
-            logger.warning("Chimera Deep Search: no name/fullName/firstName+lastName; skipping (lead has no searchable name)")
+            self._emit(ctx, "name_check_fail", "no name/fullName/firstName+lastName; lead has no searchable name — returning FAIL")
             return {}, StopCondition.FAIL
+        self._emit(ctx, "name_check_ok", f"name={repr(name[:50])}")
 
         r = self._get_redis()
         state = get_lead_state(ctx.data)
@@ -254,9 +251,10 @@ class ChimeraStation(PipelineStation):
                 await asyncio.sleep(min(self.PAUSE_POLL_SEC, self.PAUSE_WAIT_MAX - waited))
                 waited += self.PAUSE_POLL_SEC
             if r.get(self.SYSTEM_STATE_PAUSED):
-                logger.warning("SYSTEM_STATE:PAUSED still set after wait; skipping Chimera")
+                self._emit(ctx, "paused_skip", f"SYSTEM_STATE:PAUSED still set after {waited}s — skipping Chimera")
                 return {}, StopCondition.CONTINUE
         except Exception as e:
+            self._emit(ctx, "paused_check_fail", str(e)[:150])
             logger.debug(f"SYSTEM_STATE:PAUSED check failed: {e}")
 
         tried: set = set()
@@ -269,13 +267,15 @@ class ChimeraStation(PipelineStation):
         while True:
             if not tried:
                 provider = select_provider(ctx.data, r, tried=tried, preferred=preferred)
+                self._emit(ctx, "provider_select", f"first_choice={provider} preferred={repr(preferred)}")
             else:
                 if failed_provider is None:
                     break
                 provider = get_next_provider(failed_provider, tried=tried, r=r)
                 if provider is None:
-                    logger.warning("Chimera: all Magazine providers exhausted")
+                    self._emit(ctx, "get_next_exhausted", f"all Magazine providers exhausted after tried={tried}")
                     return {}, StopCondition.CONTINUE
+                self._emit(ctx, "provider_select", f"next_after_{failed_provider}={provider} tried={tried}")
             tried.add(provider)
 
             domain = (provider or "").lower().replace(" ", "")
@@ -312,7 +312,7 @@ class ChimeraStation(PipelineStation):
                     timestamp=str(int(time.time() * 1000)),
                 )
 
-                self._emit(ctx, "waiting_core", f"BRPOP timeout={self.DEFAULT_TIMEOUT}s")
+                self._emit(ctx, "waiting_core", f"BRPOP {results_key} timeout={self.DEFAULT_TIMEOUT}s — Chimera Core must LPUSH result to this key")
                 telemetry_stop = asyncio.Event()
                 telemetry_task = None
                 if getattr(ctx, "progress_queue", None) is not None:

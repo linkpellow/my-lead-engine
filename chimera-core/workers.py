@@ -918,6 +918,11 @@ class PhantomWorker:
             self._mission_run_count += 1
             mission_count = self._mission_run_count
 
+        logger.info(
+            "[ChimeraCore] execute_mission: mission_id=%s instruction=%s type=%s target_provider=%s",
+            mission_id, mission.get("instruction"), mission.get("type"), mission.get("target_provider"),
+        )
+
         # Blueprint Interpreter: when Blueprint has instructions, run those instead of domain-specific logic
         bp = mission.get("blueprint") or {}
         if (isinstance(bp, dict) and (bp.get("instructions") or mission.get("instructions"))):
@@ -1082,7 +1087,7 @@ class PhantomWorker:
         await asyncio.sleep(d)
 
     def _emit_telemetry(self, step: str, detail: str) -> None:
-        """LPUSH to chimera:telemetry:{mission_id} for Scrapegoat to stream into progress. Root-cause diagnosis: pivot, CAPTCHA, extract."""
+        """LPUSH to chimera:telemetry:{mission_id} for Scrapegoat to stream into progress. Root-cause diagnosis: pivot, CAPTCHA, extract. Also log to stdout."""
         mid = getattr(self, "_telemetry_mission_id", None)
         if not mid:
             return
@@ -1093,6 +1098,7 @@ class PhantomWorker:
             r.lpush(f"chimera:telemetry:{mid}", json.dumps({"t": time.time(), "step": step, "detail": detail[:500] if detail else ""}))
         except Exception:
             pass
+        logger.info("[ChimeraCore] %s: %s", step, detail[:300] if detail else "")
 
     async def _check_403_and_rotate(self, mission_id: str, carrier: Optional[str] = None) -> bool:
         """
@@ -1296,6 +1302,7 @@ class PhantomWorker:
                 return {"status": "failed", "error": f"pivot_error: {str(e)[:200]}", "mission_id": mission_id}
             if isinstance(pivot_ret, dict) and pivot_ret.get("status") in ("skipped", "failed"):
                 err = pivot_ret.get("error") or pivot_ret.get("reason") or "pivot_skipped"
+                self._emit_telemetry("pivot_return_fail", err[:200])
                 return {"status": "failed", "error": err, "mission_id": mission_id}
             await self._check_403_and_rotate(mission_id, mission.get("carrier"))
 
@@ -1310,6 +1317,7 @@ class PhantomWorker:
             result.setdefault("mission_id", mission_id)
             result.setdefault("status", "completed")
             result["captcha_solved"] = captcha_solved
+            self._emit_telemetry("extract_result", f"out_keys={list(k for k in result if k not in ('mission_id', 'captcha_solved'))}")
             return result
         finally:
             self._telemetry_mission_id = None
@@ -1419,6 +1427,7 @@ class PhantomWorker:
                 self._emit_telemetry("pivot_result_fail", f"{result_selector} {str(e)[:150]}")
         else:
             # No result_selector: allow results page to load (ZabaSearch, SearchPeopleFree, ThatsThem, AnyWho)
+            self._emit_telemetry("pivot_results_sleep", "2.5s (no result_selector)")
             await asyncio.sleep(2.5)
 
         self._emit_telemetry("pivot_done", name)

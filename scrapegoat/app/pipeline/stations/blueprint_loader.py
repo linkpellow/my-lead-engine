@@ -13,6 +13,7 @@ from typing import Any, Dict, Set, Tuple
 from loguru import logger
 import redis
 
+from app.pipeline.logging_util import station_emit
 from app.pipeline.station import PipelineStation
 from app.pipeline.types import PipelineContext, StopCondition
 
@@ -58,12 +59,7 @@ class BlueprintLoaderStation(PipelineStation):
         return redis.from_url(url, decode_responses=True)
 
     def _emit(self, ctx: PipelineContext, substep: str, detail: str) -> None:
-        q = getattr(ctx, "progress_queue", None)
-        if q is not None:
-            try:
-                q.put_nowait({"station": "Blueprint Loader", "substep": substep, "detail": detail})
-            except Exception:
-                pass
+        station_emit(getattr(ctx, "progress_queue", None), "Blueprint Loader", substep, detail)
 
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
         out: Dict[str, Any] = {}
@@ -82,18 +78,21 @@ class BlueprintLoaderStation(PipelineStation):
             provider = "TruePeopleSearch"
 
         domain = _PROVIDER_TO_DOMAIN.get(provider) or provider.replace(" ", "").lower() + ".com"
-        self._emit(ctx, "loading", domain)
+        self._emit(ctx, "provider_selected", f"provider={provider} domain={domain}")
+        self._emit(ctx, "redis_lookup", f"keys=BLUEPRINT:{domain} blueprint:{domain}")
 
-        # Fetch BLUEPRINT:{domain} then blueprint:{domain}
         raw = None
         for prefix in (BLUEPRINT_PREFIX, LEGACY_PREFIX):
             key = f"{prefix}{domain}"
             try:
                 raw = r.hgetall(key)
                 if raw:
+                    self._emit(ctx, "redis_hit", f"key={key}")
                     break
             except Exception as e:
                 logger.warning("Blueprint Loader: Redis hgetall failed for key=%s: %s", key, e)
+        if not raw:
+            self._emit(ctx, "redis_miss", f"domain={domain} — no blueprint in Redis; will try auto_map then mapping_required")
 
         if raw and isinstance(raw, dict):
             data_str = raw.get("data") or raw.get("blueprint_json")

@@ -1,7 +1,7 @@
 """
 Pipeline Engine: Orchestrates stations with stop conditions and cost tracking.
 Failures are localized with step, reason, and suggested_fix when stations raise
-ChimeraEnrichmentError.
+ChimeraEnrichmentError. Structured logging: every transition, decision, and halt.
 """
 import datetime
 import time
@@ -11,6 +11,7 @@ from loguru import logger
 from typing import Any, Dict, List, Optional
 
 from .exceptions import ChimeraEnrichmentError
+from .logging_util import pipeline_log
 from .station import PipelineStation
 from .types import PipelineContext, StopCondition
 
@@ -54,17 +55,20 @@ class PipelineEngine:
         data = initial_data.copy()
         if not data.get("name") and (data.get("fullName") or data.get("full_name") or data.get("Name")):
             data["name"] = data.get("fullName") or data.get("full_name") or data.get("Name") or ""
+            pipeline_log(progress_queue, "Pipeline", "name_normalized", f"from fullName/full_name/Name -> name={repr((data.get('name') or '')[:60])}")
         if not data.get("name") and (data.get("firstName") or data.get("lastName") or data.get("first_name") or data.get("last_name")):
             data["name"] = f"{data.get('firstName') or data.get('first_name') or ''} {data.get('lastName') or data.get('last_name') or ''}".strip()
+            pipeline_log(progress_queue, "Pipeline", "name_normalized", f"from firstName+lastName -> name={repr((data.get('name') or '')[:60])}")
         ctx = PipelineContext(data=data, budget_limit=self.budget_limit, progress_queue=progress_queue)
         steps = step_collector
         N = len(self.route)
 
-        logger.info(f"🚀 Starting pipeline with {N} stations (budget: ${self.budget_limit:.2f})")
+        pipeline_log(progress_queue, "Pipeline", "start", f"stations={N} route=[{', '.join(s.name for s in self.route)}] budget=${self.budget_limit:.2f} lead_name={repr((data.get('name') or '')[:50]) or '?'}")
 
         for i, station in enumerate(self.route):
             t0 = time.perf_counter()
             started_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            pipeline_log(progress_queue, "Pipeline", "station_enter", f"({i+1}/{N}) {station.name} — starting")
             if progress_queue is not None:
                 progress_queue.put_nowait({
                     "step": i + 1, "total": N, "pct": int(i / N * 100),
@@ -75,6 +79,7 @@ class PipelineEngine:
                 result_data, condition = await station.execute(ctx)
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 status = "ok" if condition == StopCondition.CONTINUE else ("stop" if condition == StopCondition.SKIP_REMAINING else "fail")
+                pipeline_log(progress_queue, "Pipeline", "station_exit", f"{station.name} condition={condition.value} status={status} duration_ms={duration_ms} cost={station.cost_estimate:.4f}")
                 if steps is not None:
                     steps.append({"station": station.name, "started_at": started_at, "duration_ms": duration_ms, "condition": condition.value, "status": status})
                 if progress_queue is not None:
@@ -86,18 +91,18 @@ class PipelineEngine:
                 actual_cost = station.cost_estimate
                 ctx.update(result_data, station.name, actual_cost, condition)
                 if condition == StopCondition.SKIP_REMAINING:
-                    logger.info("🛑 Stop Condition hit at %s. Finishing early.", station.name)
+                    pipeline_log(progress_queue, "Pipeline", "stop_condition", f"SKIP_REMAINING at {station.name} — finishing early")
                     break
                 if condition == StopCondition.FAIL:
-                    logger.warning("⚠️  Station %s failed.", station.name)
+                    pipeline_log(progress_queue, "Pipeline", "station_fail", f"{station.name} returned FAIL — continuing to next station")
                     continue
-                logger.debug("✅ %s completed (cost=%.4f, total=%.4f)", station.name, actual_cost, ctx.total_cost)
             except ChimeraEnrichmentError as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 recent = (log_buffer[-20:] if log_buffer and len(log_buffer) > 0 else []) if log_buffer else []
                 err_msg = f"{e.reason} (step={e.step})"
                 if e.suggested_fix:
                     err_msg += f" [suggested_fix: {e.suggested_fix}]"
+                pipeline_log(progress_queue, "Pipeline", "station_error", f"{station.name} ChimeraEnrichmentError reason={e.reason} step={e.step} suggested_fix={e.suggested_fix or 'none'}")
                 if steps is not None:
                     step_entry = {"station": station.name, "started_at": started_at, "duration_ms": duration_ms, "condition": "fail", "status": "fail", "error": err_msg}
                     if e.suggested_fix:
@@ -118,6 +123,7 @@ class PipelineEngine:
             except Exception as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 recent = (log_buffer[-20:] if log_buffer and len(log_buffer) > 0 else []) if log_buffer else []
+                pipeline_log(progress_queue, "Pipeline", "station_error", f"{station.name} Exception: {str(e)[:300]}")
                 if steps is not None:
                     step_entry = {"station": station.name, "started_at": started_at, "duration_ms": duration_ms, "condition": "fail", "status": "fail", "error": str(e)}
                     if recent:
@@ -132,8 +138,7 @@ class PipelineEngine:
                 logger.exception("💥 Critical Failure at %s: %s", station.name, e)
                 ctx.errors.append(str(e))
         
-        # Final summary
-        logger.info(f"🏁 Pipeline complete: ${ctx.total_cost:.4f} spent, {len(ctx.history)} stations executed")
+        pipeline_log(progress_queue, "Pipeline", "complete", f"cost=${ctx.total_cost:.4f} stations_executed={len(ctx.history)} errors={len(ctx.errors)}")
         if ctx.errors:
             logger.warning(f"⚠️  {len(ctx.errors)} errors encountered")
         

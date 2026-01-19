@@ -525,6 +525,9 @@ export default function SovereignPilotPage() {
             }
             break;
           }
+          if (ev.event === 'log' && ev.action != null) {
+            setEnrichSubsteps((s) => [...s, { station: String(ev.component ?? 'Pipeline'), substep: String(ev.action), detail: String(ev.detail ?? '') }]);
+          }
           if (ev.substep != null) {
             const st = (ev.station as string) ?? '';
             const sb = String(ev.substep);
@@ -692,7 +695,7 @@ export default function SovereignPilotPage() {
       const { errorsSummary, bottleneck_hint, allLogLines } = computeErrorsAndBottleneck(lastEnrichRun);
 
       const readme =
-        'HOW TO USE (paste this file or COPY FOR CURSOR into chat to plan fixes): (1) errors_summary = what broke and where (includes chimera timeouts/failures from logs). (2) bottleneck_hint = longest step + chimera failure count. (3) enrichment.lastEnrichRun = steps + full logs. (4) all_log_lines = every pipeline log. (5) config + pipeline = connectivity. (6) For people-search/Chimera: also paste Railway logs for chimera-core (last 50–100 lines) — Scrapegoat does not see Core’s internal errors (captcha, selectors, navigation).';
+        'HOW TO USE (paste this file or COPY FOR CURSOR into chat to plan fixes): (1) errors_summary = what broke and where (includes chimera timeouts/failures from logs). (2) bottleneck_hint = longest step + chimera failure count. (3) enrichment.lastEnrichRun = steps + full logs. (4) all_log_lines = every pipeline log. (5) config + pipeline = connectivity. (6) For people-search/Chimera: also paste Railway logs for chimera-core (last 50–100 lines) — Scrapegoat does not see Core’s internal errors (captcha, selectors, navigation). (7) AI: attach this file in Cursor, @-mention chimera-core/workers.py, scrapegoat/app/pipeline/stations/enrichment.py, scrapegoat/app/pipeline/stations/blueprint_loader.py, chimera-core/main.py, scrapegoat/main.py (and seed_magazine_blueprints.py if mapping_required; capsolver.py if CAPTCHA), then invoke rule debug-enrichment-with-ai. Full steps: PEOPLE_SEARCH_CHECKLIST.md § Debug with AI.';
 
       const blob = new Blob(
         [
@@ -758,6 +761,7 @@ export default function SovereignPilotPage() {
       `last run: processed=${run.processed} success=${run.success}; at=${run.at}; steps: ${(run.steps ?? []).map((s: { station?: string; status?: string; duration_ms?: number }) => `${s.station}(${s.status})${s.duration_ms ?? 0}ms`).join(', ') || '-'}`,
       '',
       'For people-search/Chimera: also paste Railway logs for chimera-core (last 50–100 lines).',
+      'AI: @chimera-core/workers.py @scrapegoat/app/pipeline/stations/enrichment.py @scrapegoat/app/pipeline/stations/blueprint_loader.py @chimera-core/main.py @scrapegoat/main.py and rule debug-enrichment-with-ai. See PEOPLE_SEARCH_CHECKLIST.md § Debug with AI.',
       '---',
     ];
     const text = lines.join('\n');
@@ -798,6 +802,9 @@ export default function SovereignPilotPage() {
           </p>
           <p className="text-[10px] text-gray-500 mt-1">
             To get fixes fast: Copy for Cursor (or attach Download) + chimera-core Railway logs for people-search issues.
+          </p>
+          <p className="text-[10px] text-gray-500 mt-0.5">
+            AI debug: Paste in Cursor with @chimera-core/workers.py @scrapegoat/app/pipeline/stations/enrichment.py @scrapegoat/app/pipeline/stations/blueprint_loader.py @chimera-core/main.py @scrapegoat/main.py and rule debug-enrichment-with-ai. Steps: PEOPLE_SEARCH_CHECKLIST.md § Debug with AI.
           </p>
           <p className="text-[10px] text-gray-600 mt-0.5">
             build 2026-01-19 — if you don’t see this, hard-refresh or check deploy/cache

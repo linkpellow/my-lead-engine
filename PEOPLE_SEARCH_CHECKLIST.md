@@ -74,6 +74,33 @@ railway redeploy -s scrapegoat -y
 
 ---
 
+## Debug with AI (Cursor)
+
+Use when a run fails or stalls and you need to correlate logs with code.
+
+### Steps
+
+1. **v2-pilot** → Run Enrich → **Download logs** (or **Copy for Cursor**).
+2. **Cursor** → Paste the Copy block, or attach `chimera-enrichment-logs-*.json`.
+3. **@-mention** (so the model sees the code):
+   - `chimera-core/workers.py`
+   - `scrapegoat/app/pipeline/stations/enrichment.py`
+   - `scrapegoat/app/pipeline/stations/blueprint_loader.py`
+   - `chimera-core/main.py`
+   - `scrapegoat/main.py`
+   - If `mapping_required` / `redis_miss`: `scrapegoat/scripts/seed_magazine_blueprints.py`
+   - If CAPTCHA / `capsolver_*`: `chimera-core/capsolver.py`
+   - If Identity / `name_check_fail`: `scrapegoat/app/enrichment/identity_resolution.py`, `scrapegoat/app/pipeline/engine.py`
+4. **Invoke** the rule: `debug-enrichment-with-ai` or say: *"Analyze these enrichment logs using the Debug Enrichment rule."*
+5. **Optional (people-search):** Paste chimera-core Railway logs (last 50–100 lines) so the model can see `[ChimeraCore]` pivot/CAPTCHA/extract errors.
+
+### Rule and map
+
+- **Rule:** `.cursor/rules/debug-enrichment-with-ai.mdc`
+- **Log→code map:** inside the rule; use it to map `failure_mode`, `errors_summary`, and substeps (e.g. `pivot_fill_fail`, `waiting_core`, `redis_miss`) to files and symbols.
+
+---
+
 ## References
 
 - **Env by service:** `V2_PILOT_RAILWAY_ALIGNMENT.md` §5 and §8.

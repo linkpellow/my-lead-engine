@@ -384,7 +384,9 @@ async def run_worker_swarm(workers: list):
                 continue
 
             # Required signature (Phase 8)
-            logger.info(f"✅ [CHIMERA-BODY] Mission consumed from Swarm Hive: [{mission_id}]")
+            logger.info(
+                f"[ChimeraCore] mission consumed: id={mission_id} instruction={mission.get('instruction')} target_provider={mission.get('target_provider')}"
+            )
 
             if not workers:
                 continue
@@ -408,12 +410,13 @@ async def run_worker_swarm(workers: list):
                 pass
 
             try:
+                logger.info(f"[ChimeraCore] executing: instruction={mission.get('instruction')} mission_id={mission_id}")
                 result = await worker.execute_mission(mission)
                 if mission.get("instruction") == "deep_search" and mission_id:
                     key = f"chimera:results:{mission_id}"
                     try:
                         await asyncio.to_thread(r.lpush, key, json.dumps(result))
-                        logger.info(f"LPUSH chimera:results [{mission_id}]")
+                        logger.info(f"[ChimeraCore] LPUSH {key} status={result.get('status', 'completed')} — Scrapegoat BRPOP will receive")
                     except Exception as e:
                         logger.warning(f"LPUSH chimera:results failed: {e}")
                     if os.getenv("BRAINSCRAPER_URL"):
@@ -446,7 +449,7 @@ async def run_worker_swarm(workers: list):
                 except Exception:
                     pass
             except Exception as e:
-                logger.error(f"❌ Mission execution failed: [{mission_id}] {e}")
+                logger.error(f"[ChimeraCore] mission execution failed: mission_id={mission_id} error={e}")
                 if mission.get("instruction") == "deep_search" and mission_id:
                     key = f"chimera:results:{mission_id}"
                     try:
@@ -454,8 +457,9 @@ async def run_worker_swarm(workers: list):
                             r.lpush, key,
                             json.dumps({"status": "failed", "error": str(e), "mission_id": mission_id}),
                         )
-                    except Exception:
-                        pass
+                        logger.info(f"[ChimeraCore] LPUSH {key} failed payload — Scrapegoat BRPOP will not hang")
+                    except Exception as lerr:
+                        logger.warning(f"[ChimeraCore] LPUSH {key} failed: {lerr} — Scrapegoat may BRPOP timeout")
                     if os.getenv("BRAINSCRAPER_URL"):
                         try:
                             from telemetry_client import TelemetryClient
