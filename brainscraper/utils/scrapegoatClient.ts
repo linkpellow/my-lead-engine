@@ -47,23 +47,22 @@ export interface DLQRetryResponse {
   retried_count?: number;
 }
 
-// Client configuration
-const getBaseUrl = (): string => {
+/** Scrapegoat base URL for all BrainScraper→Scrapegoat calls. Use SCRAPEGOAT_API_URL or fallback. */
+export function getScrapegoatBase(): string {
   const url = process.env.SCRAPEGOAT_API_URL;
   if (!url) {
     console.warn('SCRAPEGOAT_API_URL not set, using default');
     return 'https://scrapegoat-production-8d0a.up.railway.app';
   }
-  // Remove trailing slash if present
   return url.replace(/\/$/, '');
-};
+}
 
 class ScrapegoatClient {
   private baseUrl: string;
   private timeout: number;
 
   constructor() {
-    this.baseUrl = getBaseUrl();
+    this.baseUrl = getScrapegoatBase();
     this.timeout = 10000; // 10 second timeout
   }
 
@@ -113,7 +112,9 @@ class ScrapegoatClient {
   }
 
   /**
-   * Get combined pipeline status (health + queue)
+   * Get combined pipeline status (health + queue).
+   * Normalizes Scrapegoat /health (which returns {status, service, timestamp}) into
+   * HealthResponse {status, redis, redis_url_configured} for UI compatibility.
    */
   async getPipelineStatus(): Promise<PipelineStatus> {
     const [health, queue] = await Promise.all([
@@ -130,8 +131,16 @@ class ScrapegoatClient {
       })),
     ]);
 
+    // Normalize: Scrapegoat /health is minimal; ensure HealthResponse shape.
+    // Use queue.status === 'active' to infer Redis (successful /queue/status); catch gives 'inactive'.
+    const h = health as HealthResponse & { service?: string; redis?: string; redis_url_configured?: boolean };
+    if (h.redis === undefined) {
+      h.redis = queue && (queue as { status?: string }).status === 'active' ? 'connected' : 'disconnected';
+      h.redis_url_configured = h.redis === 'connected';
+    }
+
     return {
-      health,
+      health: h,
       queue,
       timestamp: new Date().toISOString(),
     };

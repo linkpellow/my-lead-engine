@@ -61,13 +61,15 @@ class BlueprintLoaderStation(PipelineStation):
         out: Dict[str, Any] = {}
         r = self._get_redis()
 
-        # Resolve target provider (same as ChimeraStation would)
         provider = None
         if ROUTER_AVAILABLE:
             try:
                 provider = select_provider(ctx.data, r, tried=set())
             except Exception as e:
-                logger.debug("BlueprintLoader: select_provider failed: %s", e)
+                logger.warning(
+                    "Blueprint Loader: select_provider failed (linkedin=%s): %s",
+                    (ctx.data.get("linkedinUrl") or "?")[:60], e,
+                )
         if not provider:
             provider = "TruePeopleSearch"
 
@@ -81,8 +83,8 @@ class BlueprintLoaderStation(PipelineStation):
                 raw = r.hgetall(key)
                 if raw:
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Blueprint Loader: Redis hgetall failed for key=%s: %s", key, e)
 
         if raw and isinstance(raw, dict):
             data_str = raw.get("data") or raw.get("blueprint_json")
@@ -91,24 +93,26 @@ class BlueprintLoaderStation(PipelineStation):
                     bp = json.loads(data_str)
                     out["_blueprint"] = bp
                     out["_blueprint_domain"] = domain
-                    logger.info("BlueprintLoader: loaded for %s", domain)
+                    logger.info("Blueprint Loader: loaded for %s", domain)
                     return out, StopCondition.CONTINUE
                 except Exception as e:
-                    logger.warning("BlueprintLoader: parse %s: %s", domain, e)
+                    logger.exception(
+                        "Blueprint Loader: failed to parse blueprint JSON (domain=%s): %s",
+                        domain, e,
+                    )
             # Fallback: use hash as blueprint-like map
             instr = raw.get("instructions")
             if isinstance(instr, str):
                 try:
                     out["_blueprint"] = {"instructions": json.loads(instr), "domain": domain}
                     return out, StopCondition.CONTINUE
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Blueprint Loader: parse instructions for %s: %s", domain, e)
 
-        # No blueprint: alert Dojo
         try:
             r.publish(DOJO_ALERTS, json.dumps({"type": "mapping_required", "domain": domain}))
         except Exception as e:
-            logger.debug("BlueprintLoader: publish dojo:alerts: %s", e)
+            logger.warning("Blueprint Loader: publish dojo:alerts failed (domain=%s): %s", domain, e)
         out["_mapping_required"] = domain
-        logger.warning("BlueprintLoader: no blueprint for %s; Mapping Required", domain)
+        logger.warning("Blueprint Loader: no blueprint for %s; Mapping Required", domain)
         return out, StopCondition.CONTINUE

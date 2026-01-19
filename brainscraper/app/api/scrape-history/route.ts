@@ -49,15 +49,17 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { location, maxLeads } = body;
-    
-    // In production, this would trigger actual scraping
-    // For now, return a mock response
+
+    // Scrape initiation via this endpoint is not implemented. Use LinkedIn Lead
+    // Generator or V2 Pilot to run searches. Returning implemented: false so
+    // callers do not treat a fake jobId as a queued job.
     return NextResponse.json({
       success: true,
-      message: 'Scraping initiated',
-      jobId: `job-${Date.now()}`,
-      location,
-      maxLeads,
+      jobId: null,
+      implemented: false,
+      message: 'Scrape initiation is not implemented. Use LinkedIn Lead Generator or V2 Pilot.',
+      location: location ?? null,
+      maxLeads: maxLeads ?? null,
     });
   } catch (error) {
     console.error('Error initiating scrape:', error);

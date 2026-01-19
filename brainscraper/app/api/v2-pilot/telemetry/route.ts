@@ -72,16 +72,14 @@ interface TelemetryPayload {
   trauma_details?: string;
 }
 
-// Get Redis client
-function getRedisClient(): Redis {
+function createRedisClient(): Redis | null {
   const redisUrl = process.env.REDIS_URL || process.env.APP_REDIS_URL;
-  if (!redisUrl) {
-    throw new Error('REDIS_URL not configured');
-  }
+  if (!redisUrl) return null;
   return new Redis(redisUrl, { maxRetriesPerRequest: 3 });
 }
 
 export async function POST(request: NextRequest) {
+  let redis: Redis | null = null;
   try {
     const body = await request.json() as TelemetryPayload;
     const { mission_id } = body;
@@ -93,7 +91,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const redisClient = getRedisClient();
+    redis = createRedisClient();
+    if (!redis) {
+      return NextResponse.json(
+        { error: 'REDIS_URL not configured', mission_id },
+        { status: 503 }
+      );
+    }
 
     // Update mission hash with telemetry data
     const updates: Record<string, string> = {};
@@ -150,9 +154,8 @@ export async function POST(request: NextRequest) {
 
     // Write to Redis
     if (Object.keys(updates).length > 0) {
-      await redisClient.hset(`mission:${mission_id}`, updates);
-      // Reset expiry
-      await redisClient.expire(`mission:${mission_id}`, 86400);
+      await redis.hset(`mission:${mission_id}`, updates);
+      await redis.expire(`mission:${mission_id}`, 86400);
     }
 
     return NextResponse.json({
@@ -163,11 +166,13 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Error processing telemetry:', error);
     return NextResponse.json(
-      { 
-        error: 'Internal server error', 
-        message: error instanceof Error ? error.message : 'Unknown error' 
+      {
+        error: 'Internal server error',
+        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 }
     );
+  } finally {
+    redis?.quit().catch(() => {});
   }
 }

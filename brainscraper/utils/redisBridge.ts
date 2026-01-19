@@ -33,11 +33,14 @@ async function getRecentlyEnrichedSet(urls: string[]): Promise<Set<string>> {
   try {
     const { rows } = await db.query<{ linkedin_url: string }>(
       `SELECT linkedin_url FROM leads
-       WHERE linkedin_url = ANY($1) AND enriched_at > NOW() - INTERVAL '${DEDUP_DAYS} days'`,
-      [urls]
+       WHERE linkedin_url = ANY($1) AND enriched_at > NOW() - ($2::text || ' days')::interval`,
+      [urls, DEDUP_DAYS]
     );
     return new Set(rows.map((r) => r.linkedin_url));
-  } catch {
+  } catch (e) {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn('[REDIS_BRIDGE] getRecentlyEnrichedSet failed:', e instanceof Error ? e.message : e);
+    }
     return new Set();
   }
 }
@@ -168,18 +171,22 @@ function toQueueLeadFromRow(row: Record<string, unknown>): { q: Record<string, u
   const location = String(row.location ?? row.geoRegion ?? '').trim();
   const title = String(row.title ?? row.headline ?? row.job_title ?? '').trim();
   const company = String(row.company ?? row.companyName ?? '').trim();
-  return {
-    q: {
-      linkedinUrl,
-      name,
-      location,
-      title,
-      company,
-      platform: 'linkedin',
-      sourceDetails: { source: 'enrich_ui' },
-    },
-    url: linkedinUrl,
+  const q: Record<string, unknown> = {
+    linkedinUrl,
+    name,
+    location,
+    title,
+    company,
+    platform: 'linkedin',
+    sourceDetails: { source: 'enrich_ui' },
   };
+  if (row.firstName != null && String(row.firstName).trim()) q.firstName = String(row.firstName).trim();
+  if (row.lastName != null && String(row.lastName).trim()) q.lastName = String(row.lastName).trim();
+  if (row.city != null && String(row.city).trim()) q.city = String(row.city).trim();
+  if (row.state != null && String(row.state).trim()) q.state = String(row.state).trim();
+  if (row.email != null && String(row.email).trim()) q.email = String(row.email).trim();
+  if (row.phone != null && String(row.phone).trim()) q.phone = String(row.phone).trim();
+  return { q, url: linkedinUrl };
 }
 
 /**

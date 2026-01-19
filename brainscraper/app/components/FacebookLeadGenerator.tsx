@@ -46,6 +46,12 @@ export default function FacebookLeadGenerator() {
         throw new Error(data.error || 'Failed to discover Facebook leads');
       }
 
+      if (data.implemented === false && data.message) {
+        setError(data.message);
+        setDiscoveryRecords([]);
+        return;
+      }
+
       setDiscoveryRecords(data.records || []);
       setWorkflowStep('results');
     } catch (err) {

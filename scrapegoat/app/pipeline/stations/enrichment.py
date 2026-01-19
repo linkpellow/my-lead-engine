@@ -1,6 +1,9 @@
 """
 Pipeline Station Implementations
-Wraps existing enrichment logic into contract-based stations
+Wraps existing enrichment logic into contract-based stations.
+Each step uses structured try/except, ChimeraEnrichmentError for critical
+failures, and clear logs (step, input context, reason) so we know precisely
+why and when in the pipeline a failure occurred.
 """
 import asyncio
 import json
@@ -8,10 +11,12 @@ import os
 import time
 import uuid
 import urllib.request
-from typing import Dict, Any, Tuple, Optional
-from loguru import logger
-import redis
+from typing import Any, Dict, Optional, Tuple
 
+import redis
+from loguru import logger
+
+from app.pipeline.exceptions import ChimeraEnrichmentError
 from app.pipeline.station import PipelineStation
 from app.pipeline.types import PipelineContext, StopCondition
 from app.pipeline.router import (
@@ -41,6 +46,27 @@ from app.enrichment.demographics import enrich_demographics
 from app.enrichment.database import save_to_database
 
 
+def _mission_status_upsert(r: "redis.Redis", mission_id: str, **kwargs: Any) -> None:
+    """Write to mission:{id} so v2-pilot mission-status and TRAUMA/Neural/Stealth panels can show data."""
+    try:
+        key = f"mission:{mission_id}"
+        m: Dict[str, str] = {}
+        for k, v in kwargs.items():
+            if v is None:
+                continue
+            if isinstance(v, str):
+                m[k] = v
+            elif isinstance(v, (list, dict)):
+                m[k] = json.dumps(v)
+            else:
+                m[k] = str(v)
+        if m:
+            r.hset(key, mapping=m)
+            r.expire(key, 86400)
+    except Exception as e:
+        logger.debug("ChimeraStation: mission_status upsert %s: %s", mission_id, e)
+
+
 def _get_chimera_brain_http_url() -> Optional[str]:
     u = os.getenv("CHIMERA_BRAIN_HTTP_URL")
     if u:
@@ -65,7 +91,12 @@ def _hive_predict_path(lead: Dict[str, Any]) -> Optional[str]:
         with urllib.request.urlopen(req, timeout=6) as resp:
             out = json.loads(resp.read().decode())
             return (out or {}).get("provider") or None
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Chimera Deep Search: hive predict_path failed (lead keys=%s): %s",
+            list(lead.keys()) if isinstance(lead, dict) else "?",
+            e,
+        )
         return None
 
 
@@ -81,8 +112,11 @@ def _hive_store_pattern(company: str, city: str, title: str, data_found: Dict[st
             method="POST",
         )
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Chimera Deep Search: hive store_pattern failed (company=%s city=%s): %s",
+            company, city, e,
+        )
 
 
 class IdentityStation(PipelineStation):
@@ -108,21 +142,28 @@ class IdentityStation(PipelineStation):
         return 0.0  # Free - just parsing
     
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
-        """Resolve identity from raw lead data"""
+        """Resolve identity from raw lead data."""
         try:
             result = resolve_identity(ctx.data)
-            
-            # Validate required outputs
-            if not result.get('firstName') or not result.get('lastName'):
-                logger.warning("Identity resolution failed: missing firstName or lastName")
+            if not result.get("firstName") or not result.get("lastName"):
+                logger.warning(
+                    "Identity Resolution: missing firstName or lastName (input keys=%s)",
+                    list(ctx.data.keys()) if isinstance(ctx.data, dict) else "?",
+                )
                 return {}, StopCondition.FAIL
-            
-            logger.info(f"✅ Identity resolved: {result.get('firstName')} {result.get('lastName')}")
+            logger.info("✅ Identity resolved: %s %s", result.get("firstName"), result.get("lastName"))
             return result, StopCondition.CONTINUE
-            
         except Exception as e:
-            logger.error(f"Identity resolution error: {e}")
-            return {}, StopCondition.FAIL
+            logger.exception(
+                "Identity Resolution: failed during resolve_identity (input keys=%s): %s",
+                list(ctx.data.keys()) if isinstance(ctx.data, dict) else "?",
+                e,
+            )
+            raise ChimeraEnrichmentError(
+                step="Identity Resolution",
+                reason=str(e),
+                suggested_fix="Ensure name and linkedinUrl (or equivalent) are present in lead.",
+            )
 
 
 class ChimeraStation(PipelineStation):
@@ -225,7 +266,14 @@ class ChimeraStation(PipelineStation):
             try:
                 t0 = time.perf_counter()
                 r.lpush(self.CHIMERA_MISSIONS, json.dumps(mission))
-                logger.info(f"Chimera mission queued: {mission_id} provider={provider}")
+                logger.info("Chimera mission queued: %s provider=%s", mission_id, provider)
+                _mission_status_upsert(
+                    r, mission_id,
+                    status="queued",
+                    name=(ctx.data.get("name") or f"{ctx.data.get('firstName','')} {ctx.data.get('lastName','')}".strip() or (linkedin_url or "?")[:60] or "?"),
+                    location=(ctx.data.get("city") or ctx.data.get("location") or ctx.data.get("Company") or "?"),
+                    timestamp=str(int(time.time() * 1000)),
+                )
 
                 raw = await loop_exec.run_in_executor(
                     None,
@@ -233,16 +281,24 @@ class ChimeraStation(PipelineStation):
                 )
                 elapsed_ms = (time.perf_counter() - t0) * 1000
             except Exception as e:
-                logger.warning(f"Chimera station error: {e}")
+                logger.exception(
+                    "Chimera Deep Search: failed during mission push or brpop (mission_id=%s provider=%s linkedin=%s): %s",
+                    mission_id, provider, linkedin_url[:60] if linkedin_url else "?", e,
+                )
                 record_result(provider, state, success=False, latency_ms=self.DEFAULT_TIMEOUT * 1000, r=r)
                 record_carrier_result(domain, carrier or "default", False, r)
+                _mission_status_upsert(r, mission_id, status="failed", trauma_signals=["CHIMERA_FAILED"], trauma_details=str(e)[:500])
                 failed_provider = provider
                 continue
 
             if raw is None:
-                logger.warning(f"Chimera results timeout for {mission_id} (provider={provider})")
+                logger.warning(
+                    "Chimera Deep Search: results timeout (mission_id=%s provider=%s linkedin=%s, wait=%ss)",
+                    mission_id, provider, linkedin_url[:60] if linkedin_url else "?", self.DEFAULT_TIMEOUT,
+                )
                 record_result(provider, state, success=False, latency_ms=self.DEFAULT_TIMEOUT * 1000, r=r)
                 record_carrier_result(domain, carrier or "default", False, r)
+                _mission_status_upsert(r, mission_id, status="timeout", trauma_signals=["TIMEOUT"], trauma_details=f"BRPOP timeout {self.DEFAULT_TIMEOUT}s provider={provider}")
                 failed_provider = provider
                 continue
 
@@ -250,9 +306,13 @@ class ChimeraStation(PipelineStation):
                 _, payload = raw
                 data = json.loads(payload.decode("utf-8") if isinstance(payload, bytes) else payload)
             except Exception as parse_err:
-                logger.warning(f"Chimera result parse error for {mission_id} (provider={provider}): {parse_err}")
+                logger.exception(
+                    "Chimera Deep Search: result parse error (mission_id=%s provider=%s): %s",
+                    mission_id, provider, parse_err,
+                )
                 record_result(provider, state, success=False, latency_ms=elapsed_ms, r=r)
                 record_carrier_result(domain, carrier or "default", False, r)
+                _mission_status_upsert(r, mission_id, status="failed", trauma_signals=["CHIMERA_FAILED"], trauma_details=(f"Parse error: {parse_err}")[:500])
                 failed_provider = provider
                 continue
 
@@ -262,9 +322,13 @@ class ChimeraStation(PipelineStation):
                 pass
 
             if not isinstance(data, dict):
-                logger.warning(f"Chimera result not a dict for {mission_id} (provider={provider})")
+                logger.error(
+                    "Chimera Deep Search: result not a dict (mission_id=%s provider=%s linkedin=%s), type=%s",
+                    mission_id, provider, linkedin_url[:60] if linkedin_url else "?", type(data).__name__,
+                )
                 record_result(provider, state, success=False, latency_ms=elapsed_ms, r=r)
                 record_carrier_result(domain, carrier or "default", False, r)
+                _mission_status_upsert(r, mission_id, status="failed", trauma_signals=["CHIMERA_FAILED"], trauma_details=f"Result not dict: {type(data).__name__}")
                 failed_provider = provider
                 continue
 
@@ -274,9 +338,13 @@ class ChimeraStation(PipelineStation):
                     err = data["errors"] if isinstance(data.get("errors"), str) else " | ".join(data.get("errors") or [])
                 if err is None:
                     err = "no message"
-                logger.warning(f"Chimera result status=failed: mission_id={mission_id} provider={provider} error={err}")
+                logger.warning(
+                    "Chimera Deep Search: status=failed (mission_id=%s provider=%s linkedin=%s): %s",
+                    mission_id, provider, linkedin_url[:60] if linkedin_url else "?", err,
+                )
                 record_result(provider, state, success=False, latency_ms=elapsed_ms, r=r)
                 record_carrier_result(domain, carrier or "default", False, r)
+                _mission_status_upsert(r, mission_id, status="failed", trauma_signals=["CHIMERA_FAILED"], trauma_details=(str(err))[:500])
                 failed_provider = provider
                 continue
 
@@ -299,6 +367,10 @@ class ChimeraStation(PipelineStation):
             for k in ("income", "age", "phone", "email"):
                 if k in data and data[k] is not None:
                     out[f"chimera_{k}"] = data[k]
+            if data.get("phone") is not None:
+                out["phone"] = data["phone"]
+            if data.get("email") is not None:
+                out["email"] = data["email"]
             out["chimera_raw"] = data
 
             # 2026 Consensus: if vision_confidence < 0.95, set NEEDS_OLMOCR_VERIFICATION
@@ -318,6 +390,8 @@ class ChimeraStation(PipelineStation):
                 if second:
                     mission_id2 = str(uuid.uuid4())
                     results_key2 = f"{self.CHIMERA_RESULTS_PREFIX}{mission_id2}"
+                    dom2 = (second or "").lower().replace(" ", "")
+                    dom2 = dom2 if "." in dom2 else f"{dom2}.com"
                     mission2 = {
                         "mission_id": mission_id2,
                         "lead": {**ctx.data, "target_provider": second},
@@ -325,6 +399,7 @@ class ChimeraStation(PipelineStation):
                         "linkedin_url": linkedin_url,
                         "target": "linkedin_profile",
                         "target_provider": second,
+                        "carrier": get_preferred_carrier_for_domain(dom2, r),
                     }
                     if ctx.data.get("_blueprint"):
                         mission2["blueprint"] = ctx.data["_blueprint"]
@@ -357,7 +432,8 @@ class ChimeraStation(PipelineStation):
                     except Exception as e2:
                         logger.debug("Chimera cross-source: %s", e2)
 
-            logger.info(f"Chimera result for {mission_id}: provider={provider} {list(out.keys())}")
+            logger.info("Chimera result for %s: provider=%s %s", mission_id, provider, list(out.keys()))
+            _mission_status_upsert(r, mission_id, status="completed")
             return out, StopCondition.CONTINUE
 
         return {}, StopCondition.CONTINUE
@@ -386,21 +462,21 @@ class ScraperEnrichmentStation(PipelineStation):
         return 0.0  # Free scraping (uses proxies, but no API costs)
     
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
-        """Enrich using scrapers (free alternative to skip-tracing)"""
+        """Enrich using scrapers (free alternative to skip-tracing)."""
         try:
-            # Use async version directly
             result = await scrape_enrich(ctx.data)
-            
-            if result.get('phone'):
-                logger.info(f"✅ Scraper found phone: {result.get('phone')}")
+            if result.get("phone"):
+                logger.info("✅ Scraper found phone: %s", result.get("phone"))
                 return result, StopCondition.CONTINUE
-            else:
-                logger.info("⚠️  Scraper enrichment found no phone - will fallback to skip-tracing")
-                return result, StopCondition.CONTINUE  # Continue to allow fallback
-            
+            logger.info("⚠️  Scraper enrichment found no phone — will fallback to skip-tracing")
+            return result, StopCondition.CONTINUE
         except Exception as e:
-            logger.error(f"Scraper enrichment error: {e}")
-            return {}, StopCondition.CONTINUE  # Don't fail - allow skip-tracing fallback
+            logger.exception(
+                "Scraper Enrichment: failed (non-critical, continuing to skip-tracing). input keys=%s: %s",
+                list(ctx.data.keys()) if isinstance(ctx.data, dict) else "?",
+                e,
+            )
+            return {}, StopCondition.CONTINUE
 
 
 class SkipTracingStation(PipelineStation):
@@ -426,27 +502,29 @@ class SkipTracingStation(PipelineStation):
         return 0.15  # Estimated cost per API call
     
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
-        """Skip-trace using paid APIs (fallback if scraper fails)"""
-        # Only run if phone not already found
-        if ctx.data.get('phone'):
+        """Skip-trace using paid APIs (fallback if scraper fails)."""
+        if ctx.data.get("phone"):
             logger.info("Phone already found, skipping skip-tracing")
             return {}, StopCondition.CONTINUE
-        
         try:
-            # Run sync function in thread pool
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, skip_trace, ctx.data)
-            
-            if result.get('phone'):
-                logger.info(f"✅ Skip-tracing found phone: {result.get('phone')}")
+            if result.get("phone"):
+                logger.info("✅ Skip-tracing found phone: %s", result.get("phone"))
                 return result, StopCondition.CONTINUE
-            else:
-                logger.warning("❌ Skip-tracing failed: No phone found")
-                return {}, StopCondition.FAIL  # Fail if no phone found
-            
-        except Exception as e:
-            logger.error(f"Skip-tracing error: {e}")
+            logger.warning("Skip-Tracing API: no phone found (input keys=%s)", list(ctx.data.keys()) if isinstance(ctx.data, dict) else "?")
             return {}, StopCondition.FAIL
+        except Exception as e:
+            logger.exception(
+                "Skip-Tracing API: failed during skip_trace (input keys=%s): %s",
+                list(ctx.data.keys()) if isinstance(ctx.data, dict) else "?",
+                e,
+            )
+            raise ChimeraEnrichmentError(
+                step="Skip-Tracing API",
+                reason=str(e),
+                suggested_fix="Check RAPIDAPI_KEY and skip-tracing API availability.",
+            )
 
 
 class TelnyxGatekeepStation(PipelineStation):
@@ -473,33 +551,32 @@ class TelnyxGatekeepStation(PipelineStation):
         return 0.01  # Telnyx API cost
     
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
-        """Validate phone via Telnyx - STOP if invalid to save costs"""
-        phone = ctx.data.get('phone')
+        """Validate phone via Telnyx. STOP if invalid to save costs."""
+        phone = ctx.data.get("phone")
         if not phone:
+            logger.warning("Telnyx Gatekeep: no phone in context (keys=%s)", list(ctx.data.keys()) if isinstance(ctx.data, dict) else "?")
             return {}, StopCondition.FAIL
-        
         try:
-            # Run sync function in thread pool
             loop = asyncio.get_event_loop()
             validation = await loop.run_in_executor(None, validate_phone_telnyx, phone)
-            
-            # Check if we should reject
-            is_junk = validation.get('is_junk', False)
-            is_voip = validation.get('is_voip', False)
-            is_landline = validation.get('is_landline', False)
-            is_mobile = validation.get('is_mobile', False)
-            
-            # Reject if junk, VOIP, or landline (only mobile is acceptable)
+            is_junk = validation.get("is_junk", False)
+            is_voip = validation.get("is_voip", False)
+            is_landline = validation.get("is_landline", False)
+            is_mobile = validation.get("is_mobile", False)
             if is_junk or is_voip or (is_landline and not is_mobile):
-                logger.warning(f"🚫 Phone rejected: {validation.get('carrier')} ({'VOIP' if is_voip else 'Landline' if is_landline else 'Junk'})")
-                return validation, StopCondition.SKIP_REMAINING  # STOP HERE - save costs
-            
-            logger.info(f"✅ Phone validated: {validation.get('carrier')} (Mobile)")
+                logger.warning(
+                    "🚫 Telnyx Gatekeep: phone rejected %s (%s)",
+                    validation.get("carrier"), "VOIP" if is_voip else "Landline" if is_landline else "Junk",
+                )
+                return validation, StopCondition.SKIP_REMAINING
+            logger.info("✅ Phone validated: %s (Mobile)", validation.get("carrier"))
             return validation, StopCondition.CONTINUE
-            
         except Exception as e:
-            logger.error(f"Telnyx validation error: {e}")
-            # Fail open - continue if validation fails
+            logger.exception(
+                "Telnyx Gatekeep: validation failed (non-critical, continuing). phone=%s: %s",
+                phone[:6] + "***" if isinstance(phone, str) and len(phone) > 6 else "?",
+                e,
+            )
             return {}, StopCondition.CONTINUE
 
 
@@ -543,7 +620,7 @@ class DemographicsStation(PipelineStation):
     
     @property
     def required_inputs(self) -> set:
-        return {"zipcode"}  # Need zipcode for census data
+        return set()  # Optional: works with zipcode; no zipcode returns {} and continues
     
     @property
     def produces_outputs(self) -> set:
@@ -554,28 +631,26 @@ class DemographicsStation(PipelineStation):
         return 0.01  # Census API cost (often free, but estimate conservatively)
     
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
-        """Enrich with demographic data"""
+        """Enrich with demographic data."""
         try:
-            # Merge identity location into contact info for enrichment
             contact_info = {
-                'zipcode': ctx.data.get('zipcode'),
-                'city': ctx.data.get('city'),
-                'state': ctx.data.get('state'),
-                'age': ctx.data.get('age'),  # May already be from scraper
+                "zipcode": ctx.data.get("zipcode"),
+                "city": ctx.data.get("city"),
+                "state": ctx.data.get("state"),
+                "age": ctx.data.get("age"),
             }
-            
-            # Run sync function in thread pool
             loop = asyncio.get_event_loop()
             demographics = await loop.run_in_executor(None, enrich_demographics, contact_info)
-            
             if demographics:
-                logger.info(f"✅ Demographics enriched: Income={demographics.get('income')}, Age={demographics.get('age')}")
-            
-            return demographics, StopCondition.CONTINUE
-            
+                logger.info("✅ Demographics enriched: Income=%s, Age=%s", demographics.get("income"), demographics.get("age"))
+            return demographics or {}, StopCondition.CONTINUE
         except Exception as e:
-            logger.error(f"Demographic enrichment error: {e}")
-            return {}, StopCondition.CONTINUE  # Non-critical, continue
+            logger.exception(
+                "Demographic Enrichment: failed (non-critical, continuing). zipcode=%s: %s",
+                ctx.data.get("zipcode") or "?",
+                e,
+            )
+            return {}, StopCondition.CONTINUE
 
 
 class DatabaseSaveStation(PipelineStation):
@@ -601,22 +676,24 @@ class DatabaseSaveStation(PipelineStation):
         return 0.0  # Database write is free
     
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
-        """Save enriched lead to database"""
+        """Save enriched lead to database."""
         try:
-            # Build enriched lead from context
             enriched_lead = ctx.data.copy()
-            
-            # Run sync function in thread pool
             loop = asyncio.get_event_loop()
             success = await loop.run_in_executor(None, save_to_database, enriched_lead)
-            
             if success:
-                logger.info(f"✅ Lead saved to database: {enriched_lead.get('name', 'Unknown')}")
+                logger.info("✅ Lead saved to database: %s", enriched_lead.get("name", "Unknown"))
                 return {"saved": True}, StopCondition.CONTINUE
-            else:
-                logger.error("❌ Failed to save lead to database")
-                return {"saved": False}, StopCondition.FAIL
-            
-        except Exception as e:
-            logger.error(f"Database save error: {e}")
+            logger.error("Database Save: save_to_database returned False (linkedin=%s)", (enriched_lead.get("linkedinUrl") or "?")[:80])
             return {"saved": False}, StopCondition.FAIL
+        except Exception as e:
+            logger.exception(
+                "Database Save: failed during save_to_database (linkedin=%s): %s",
+                (ctx.data.get("linkedinUrl") or "?")[:80],
+                e,
+            )
+            raise ChimeraEnrichmentError(
+                step="Database Save",
+                reason=str(e),
+                suggested_fix="Check DATABASE_URL, leads table schema, and write permissions.",
+            )

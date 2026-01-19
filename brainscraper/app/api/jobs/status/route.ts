@@ -1,9 +1,9 @@
 /**
  * Background Jobs Status API Route
- * Returns list of active/completed background jobs
- * 
- * Note: This is a stub implementation. When a real job queue is implemented
- * (e.g., Redis-based or database-backed), this should query actual job status.
+ * Returns list of active/completed background jobs.
+ *
+ * Uses an in-memory store. Jobs are lost on restart. For multi-instance or
+ * persistent jobs, replace with a Redis or DB-backed queue.
  */
 
 import { NextRequest, NextResponse } from 'next/server';

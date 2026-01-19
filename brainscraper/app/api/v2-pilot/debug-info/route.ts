@@ -5,14 +5,9 @@
 
 import { NextResponse } from 'next/server';
 import Redis from 'ioredis';
+import { getScrapegoatBase } from '@/utils/scrapegoatClient';
 
 export const dynamic = 'force-dynamic';
-
-function getScrapegoatBase(): string {
-  const u = process.env.SCRAPEGOAT_API_URL;
-  if (!u) return 'https://scrapegoat-production-8d0a.up.railway.app';
-  return u.replace(/\/$/, '');
-}
 
 export async function GET() {
   let redis_connected = false;

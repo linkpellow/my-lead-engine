@@ -362,10 +362,9 @@ class BrainService(chimera_pb2_grpc.BrainServicer):
         """
         try:
             logger.info(f"Updating world model: state_id={request.state_id}")
-            
-            # TODO: Implement world model update logic
-            # For now, just acknowledge the update
-            
+            # World model persistence is not yet implemented: state is acknowledged only.
+            # Future: persist to Redis/DB for outcome prediction and drift detection.
+
             return chimera_pb2.WorldModelResponse(
                 success=True,
                 prediction="{}"  # Empty JSON for now

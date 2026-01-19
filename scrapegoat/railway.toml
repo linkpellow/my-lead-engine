@@ -16,6 +16,9 @@ restartPolicyMaxRetries = 10
 [env]
 PYTHONUNBUFFERED = "1"
 PORT = "8080"
+# Chimera Brain: set in Railway Dashboard. At least one required for Chimera Deep Search.
+CHIMERA_BRAIN_HTTP_URL = ""
+CHIMERA_BRAIN_ADDRESS = ""
 
 [environments]
 [environments.production]

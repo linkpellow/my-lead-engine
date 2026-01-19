@@ -93,6 +93,7 @@ export default function SovereignPilotPage() {
   const [lastQueueCsv, setLastQueueCsv] = useState<{ pushed: number; skipped: number; total: number; at: string } | null>(null);
   const [enrichmentQueue, setEnrichmentQueue] = useState({ leads_to_enrich: 0, failed_leads: 0, redis_connected: false });
   const [isEnriching, setIsEnriching] = useState(false);
+  const [enrichStatus, setEnrichStatus] = useState<string | null>(null);
   const [lastEnrichRun, setLastEnrichRun] = useState<{
     at: string;
     processed?: boolean;
@@ -103,6 +104,11 @@ export default function SovereignPilotPage() {
     message?: string;
     steps?: Array<{ station: string; started_at?: string; duration_ms: number; condition: string; status: string; error?: string; recent_logs?: string[] }>;
     logs?: string[];
+    diagnostic_log?: string[];
+    http_status?: number;
+    http_statusText?: string;
+    error_name?: string;
+    error_cause?: string;
   } | null>(null);
   const [showLastRunLogs, setShowLastRunLogs] = useState(false);
   const [isDownloadingLogs, setIsDownloadingLogs] = useState(false);
@@ -246,6 +252,22 @@ export default function SovereignPilotPage() {
   // Pre-flight on mount
   useEffect(() => {
     loadPreflight();
+  }, []);
+
+  // Rehydrate last run from localStorage so it survives refresh (within 2h)
+  useEffect(() => {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      const s = localStorage.getItem('v2pilot_last_run');
+      if (!s) return;
+      const x = JSON.parse(s) as { at?: string; processed?: boolean; success?: boolean; error?: string; steps?: unknown[]; logs?: string[] };
+      const at = x?.at;
+      if (!at) return;
+      if (Date.now() - new Date(at).getTime() > 2 * 60 * 60 * 1000) return;
+      setLastEnrichRun({ ...x, at } as any);
+    } catch {
+      // ignore
+    }
   }, []);
 
   // Fire 25-lead batch to Chimera swarm
@@ -394,30 +416,176 @@ export default function SovereignPilotPage() {
     }
   };
 
-  // Process one from queue (Enrich = run pipeline on 1 lead via Scrapegoat)
-  const handleEnrichOne = async () => {
-    setIsEnriching(true);
+  // Persist last run to localStorage so it survives refresh; truncate logs to avoid quota
+  const persistLastRun = (obj: Record<string, unknown>) => {
     try {
-      const r = await fetch('/api/enrichment/process-one', { method: 'POST' });
-      const d = await r.json();
-      setLastEnrichRun({ at: new Date().toISOString(), ...d });
+      if (typeof localStorage === 'undefined') return;
+      let o: Record<string, unknown> = { ...obj };
+      if (Array.isArray(o.logs) && o.logs.length > 2000) {
+        o = { ...o, logs: o.logs.slice(-2000), _logsTruncated: true };
+      }
+      localStorage.setItem('v2pilot_last_run', JSON.stringify(o));
+    } catch {
+      // ignore quota/parse
+    }
+  };
+
+  // Process one from queue (Enrich = run pipeline on 1 lead via Scrapegoat)
+  // Full diagnostic log: UI, console [Enrich], and persisted lastEnrichRun.diagnostic_log
+  const handleEnrichOne = async () => {
+    const diag: string[] = [];
+    const t = () => new Date().toISOString().slice(11, 23);
+    const log = (line: string) => {
+      diag.push(line);
+      console.log('[Enrich]', line);
+    };
+    const logErr = (line: string) => {
+      diag.push(line);
+      console.error('[Enrich]', line);
+    };
+
+    setIsEnriching(true);
+    setEnrichStatus('Sending request…');
+    log(`[${t()}] Enrich started. POST /api/enrichment/process-one (client timeout 125s).`);
+
+    const ac = new AbortController();
+    const timeoutId = setTimeout(() => ac.abort(), 125_000);
+    setEnrichStatus('Waiting for Scrapegoat (up to 2 min)…');
+    log(`[${t()}] Request sent, waiting for response…`);
+
+    try {
+      const r = await fetch('/api/enrichment/process-one', { method: 'POST', signal: ac.signal });
+      clearTimeout(timeoutId);
+      setEnrichStatus('Response received, parsing…');
+
+      log(`[${t()}] Response: HTTP ${r.status} ${r.statusText} ok=${r.ok}`);
+
+      let d: Record<string, unknown> = {};
+      try {
+        d = await r.json();
+      } catch (parseErr) {
+        logErr(`[${t()}] Failed to parse response as JSON.`);
+        const run = {
+          at: new Date().toISOString(),
+          http_status: r.status,
+          http_statusText: r.statusText,
+          processed: false,
+          error: 'Invalid JSON in response',
+          diagnostic_log: diag,
+        };
+        setLastEnrichRun(run as any);
+        persistLastRun(run);
+        setShowLastRunLogs(true);
+        setEnrichStatus(null);
+        setIsEnriching(false);
+        alert(`Enrich: Invalid JSON in response (HTTP ${r.status}). See Diagnostic log and Download logs.`);
+        return;
+      }
+
+      log(`[${t()}] Body: processed=${d.processed} success=${d.success} error=${d.error ?? '-'} message=${d.message ?? '-'}`);
+
+      const steps = (d.steps as Array<{ station?: string }> | undefined) ?? [];
+      if (steps.length) {
+        log(`[${t()}] Steps: ${steps.length} [${steps.map((s) => s.station ?? '?').join(' → ')}]`);
+      }
+
+      if (!r.ok) {
+        logErr(`[${t()}] Non-OK response. Full body: ${JSON.stringify(d)}`);
+      }
+      if (d.error) {
+        logErr(`[${t()}] API error: ${d.error}`);
+      }
+
+      const run = { at: new Date().toISOString(), http_status: r.status, http_statusText: r.statusText, diagnostic_log: diag, ...d };
+      setLastEnrichRun(run as any);
+      persistLastRun(run);
+
       if (d.processed) {
         setShowLastRunLogs(true);
         alert(
-          d.success
-            ? `✅ Enriched 1: ${d.name || 'saved'}`
-            : `⚠ Processed 1 (not saved). See Last run logs below and Download logs for steps, pipeline logs, and reasons.`
+          (d.success as boolean)
+            ? `✅ Enriched 1: ${(d.name as string) || 'saved'}`
+            : `⚠ Processed 1 (not saved). See Last run logs and Diagnostic log; Download logs for full dump.`
         );
       } else {
-        alert(d.message || d.error || 'Queue empty or Scrapegoat unavailable.');
+        alert((d.message as string) || (d.error as string) || 'Queue empty or Scrapegoat unavailable.');
       }
     } catch (e) {
-      setLastEnrichRun({ at: new Date().toISOString(), processed: false, error: (e as Error)?.message || 'Unknown' });
+      clearTimeout(timeoutId);
+      const err = e instanceof Error ? e : new Error(String(e));
+      const isAbort = err.name === 'AbortError';
+      logErr(`[${t()}] Request failed (no response). name=${err.name} message=${err.message}`);
+      if (err.cause != null) {
+        logErr(`[${t()}] error.cause: ${String(err.cause)}`);
+      }
+      logErr(`[${t()}] Possible causes: Scrapegoat down, SCRAPEGOAT_API_URL wrong, network/proxy, timeout (125s), or CORS.`);
+
+      const run = {
+        at: new Date().toISOString(),
+        processed: false,
+        error: isAbort ? 'Enrichment timed out (~2 min). Pipeline may have completed on the server. Use Download logs.' : err.message || 'Unknown',
+        error_name: err.name,
+        error_cause: err.cause != null ? String(err.cause) : undefined,
+        diagnostic_log: diag,
+      };
+      setLastEnrichRun(run as any);
+      persistLastRun(run);
       setShowLastRunLogs(true);
-      alert(`Error: ${(e as Error)?.message || 'Unknown'}. See Last run logs and B. ISSUES IN LAST RUN below; Download logs for full dump.`);
+      setEnrichStatus('Request failed');
+      alert(`Error: ${run.error}\n\nSee Diagnostic log and Download logs. Last run is saved across refresh.`);
     } finally {
+      clearTimeout(timeoutId);
+      setEnrichStatus(null);
       setIsEnriching(false);
     }
+  };
+
+  // Shared: errors_summary + bottleneck_hint from lastEnrichRun (for Download and Copy for Cursor)
+  const computeErrorsAndBottleneck = (run: typeof lastEnrichRun) => {
+    const allLogLines = run?.logs ?? [];
+    const errs: { source: string; where: string; message: string; recent_logs?: string[] }[] = [];
+    if (run?.error) {
+      let msg = run.error;
+      if (run.error_name) msg += ` (${run.error_name})`;
+      if (run.error_cause) msg += ` [cause: ${run.error_cause}]`;
+      if (run.http_status) msg += ` [HTTP ${run.http_status}]`;
+      errs.push({ source: 'enrichment', where: 'process-one', message: msg });
+    }
+    run?.steps?.forEach((s) => {
+      if (s.status === 'fail') {
+        errs.push({
+          source: 'pipeline',
+          where: s.station ?? '?',
+          message: s.error || 'Station failed',
+          recent_logs: s.recent_logs?.length ? s.recent_logs : undefined,
+        });
+      }
+    });
+    const chimeraRe = /Chimera|chimera/;
+    const failRe = /timeout|failed|status=failed|parse error|not a dict|results timeout|mission push|brpop|Exception|Error/;
+    let chimeraN = 0;
+    allLogLines.forEach((line: string) => {
+      if (chimeraRe.test(line) && failRe.test(line)) {
+        chimeraN++;
+        if (errs.filter((e) => e.source === 'chimera').length < 10) {
+          errs.push({ source: 'chimera', where: 'Chimera Deep Search', message: String(line).slice(0, 500) });
+        }
+      }
+    });
+    let longest: { station: string; duration_ms: number } | null = null;
+    const failCounts: Record<string, number> = {};
+    run?.steps?.forEach((s) => {
+      const d = s.duration_ms ?? 0;
+      if (d > (longest?.duration_ms ?? 0)) longest = { station: s.station ?? '?', duration_ms: d };
+      if (s.status === 'fail') failCounts[s.station ?? '?'] = (failCounts[s.station ?? '?'] ?? 0) + 1;
+    });
+    const mf = Object.keys(failCounts).length ? Object.entries(failCounts).sort((a, b) => b[1] - a[1])[0] : null;
+    const bottleneck_hint = {
+      longest_step: longest,
+      most_failed_station: mf ? { station: mf[0], fail_count: mf[1] } : null,
+      chimera_timeout_or_fail_count: chimeraN,
+    };
+    return { errorsSummary: errs, bottleneck_hint, allLogLines };
   };
 
   // Download logs: missions, trauma, enrichment, pipeline, config for debugging Chimera enrichment
@@ -435,24 +603,10 @@ export default function SovereignPilotPage() {
       const pipeline = pipelineRes.ok ? await pipelineRes.json() : {};
       const config = debugRes.ok ? await debugRes.json() : {};
 
-      const allLogLines = lastEnrichRun?.logs ?? [];
-      const errorsSummary: { source: string; where: string; message: string; recent_logs?: string[] }[] = [];
-      if (lastEnrichRun?.error) {
-        errorsSummary.push({ source: 'enrichment', where: 'process-one', message: lastEnrichRun.error });
-      }
-      lastEnrichRun?.steps?.forEach((s) => {
-        if (s.status === 'fail') {
-          errorsSummary.push({
-            source: 'pipeline',
-            where: s.station,
-            message: s.error || 'Station failed',
-            recent_logs: s.recent_logs?.length ? s.recent_logs : undefined,
-          });
-        }
-      });
+      const { errorsSummary, bottleneck_hint, allLogLines } = computeErrorsAndBottleneck(lastEnrichRun);
 
       const readme =
-        'HOW TO USE (share this file to plan fixes): (1) Check errors_summary first—what broke and where. Empty [] = no errors. (2) enrichment.lastEnrichRun = steps + full logs. (3) all_log_lines = every pipeline log. (4) config + pipeline = connectivity. (5) chimera = mission/trauma state.';
+        'HOW TO USE (paste this file or COPY FOR CURSOR into chat to plan fixes): (1) errors_summary = what broke and where (includes chimera timeouts/failures from logs). (2) bottleneck_hint = longest step + chimera failure count. (3) enrichment.lastEnrichRun = steps + full logs. (4) all_log_lines = every pipeline log. (5) config + pipeline = connectivity. (6) For people-search/Chimera: also paste Railway logs for chimera-core (last 50–100 lines) — Scrapegoat does not see Core’s internal errors (captcha, selectors, navigation).';
 
       const blob = new Blob(
         [
@@ -460,6 +614,7 @@ export default function SovereignPilotPage() {
             {
               readme,
               errors_summary: errorsSummary,
+              bottleneck_hint,
               downloadedAt: new Date().toISOString(),
               userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
               page: 'v2-pilot',
@@ -496,6 +651,36 @@ export default function SovereignPilotPage() {
     }
   };
 
+  // Copy for Cursor: builds a paste-ready block (errors, bottleneck, Chimera-core reminder)
+  const handleCopyForCursor = () => {
+    const run = lastEnrichRun;
+    if (!run) {
+      alert('Run Enrich first, then use Copy for Cursor.');
+      return;
+    }
+    const { errorsSummary, bottleneck_hint } = computeErrorsAndBottleneck(run);
+    const l = bottleneck_hint.longest_step as { station: string; duration_ms: number } | null;
+    const mf = bottleneck_hint.most_failed_station as { station: string; fail_count: number } | null;
+    const lines: string[] = [
+      '--- v2-pilot: paste into Cursor to debug Chimera enrichment ---',
+      '',
+      'errors_summary:',
+      ...(errorsSummary.length ? errorsSummary.map((e) => `  [${e.source}] ${e.where}: ${e.message}${e.recent_logs?.length ? ` (recent_logs: ${e.recent_logs.length})` : ''}`) : ['  (none)']),
+      '',
+      `bottleneck_hint: longest_step=${l ? `${l.station} ${l.duration_ms}ms` : '-'}; chimera_timeout_or_fail_count=${bottleneck_hint.chimera_timeout_or_fail_count}; most_failed=${mf ? `${mf.station} (${mf.fail_count})` : '-'}`,
+      '',
+      `last run: processed=${run.processed} success=${run.success}; at=${run.at}; steps: ${(run.steps ?? []).map((s: { station?: string; status?: string; duration_ms?: number }) => `${s.station}(${s.status})${s.duration_ms ?? 0}ms`).join(', ') || '-'}`,
+      '',
+      'For people-search/Chimera: also paste Railway logs for chimera-core (last 50–100 lines).',
+      '---',
+    ];
+    const text = lines.join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => alert('Copied. Paste into Cursor.'),
+      () => alert('Clipboard failed. Use Download logs and attach the file.')
+    );
+  };
+
   // Get severity color
   const getSeverityColor = (severity: 'red' | 'yellow') => {
     return severity === 'red' ? 'bg-red-500' : 'bg-yellow-500';
@@ -525,14 +710,28 @@ export default function SovereignPilotPage() {
           <p className="text-sm text-green-600">
             Direct access to Chimera Core worker swarm • Real-time telemetry • Production verification
           </p>
+          <p className="text-[10px] text-gray-500 mt-1">
+            To get fixes fast: Copy for Cursor (or attach Download) + chimera-core Railway logs for people-search issues.
+          </p>
+          <p className="text-[10px] text-gray-600 mt-0.5">
+            build 2026-01-19 — if you don’t see this, hard-refresh or check deploy/cache
+          </p>
         </div>
-        <button
-          onClick={handleDownloadLogs}
-          disabled={isDownloadingLogs}
-          className="bg-cyan-600 hover:bg-cyan-500 text-black font-bold py-2 px-4 rounded disabled:bg-gray-600 disabled:cursor-not-allowed text-sm shrink-0"
-        >
-          {isDownloadingLogs ? '⏳ PREPARING…' : '⬇ DOWNLOAD LOGS'}
-        </button>
+        <div className="flex gap-2 shrink-0">
+          <button
+            onClick={handleCopyForCursor}
+            className="bg-amber-600 hover:bg-amber-500 text-black font-bold py-2 px-4 rounded text-sm"
+          >
+            📋 COPY FOR CURSOR
+          </button>
+          <button
+            onClick={handleDownloadLogs}
+            disabled={isDownloadingLogs}
+            className="bg-cyan-600 hover:bg-cyan-500 text-black font-bold py-2 px-4 rounded disabled:bg-gray-600 disabled:cursor-not-allowed text-sm"
+          >
+            {isDownloadingLogs ? '⏳ PREPARING…' : '⬇ DOWNLOAD LOGS'}
+          </button>
+        </div>
       </div>
 
       {/* Stats Dashboard */}
@@ -640,9 +839,19 @@ export default function SovereignPilotPage() {
               </button>
               <span className="text-xs text-gray-500">Process 1 from queue now</span>
             </div>
+            {isEnriching && enrichStatus && (
+              <p className="text-xs text-amber-400 mb-1" role="status">Status: {enrichStatus}</p>
+            )}
+            <p className="text-[10px] text-gray-500 mt-1">Can take 1–2 min. Full logs in Console (filter <code className="bg-black/60 px-0.5">[Enrich]</code>) and below. Last run saved across refresh.</p>
             {(() => {
               const issues: { where: string; message: string }[] = [];
-              if (lastEnrichRun?.error) issues.push({ where: 'process-one', message: lastEnrichRun.error });
+              if (lastEnrichRun?.error) {
+                let msg = lastEnrichRun.error;
+                if (lastEnrichRun.error_name) msg += ` (${lastEnrichRun.error_name})`;
+                if (lastEnrichRun.error_cause) msg += ` [cause: ${lastEnrichRun.error_cause}]`;
+                if (lastEnrichRun.http_status) msg += ` [HTTP ${lastEnrichRun.http_status}]`;
+                issues.push({ where: 'process-one', message: msg });
+              }
               lastEnrichRun?.steps?.forEach((s) => { if (s.status === 'fail') issues.push({ where: s.station, message: s.error || 'Station failed' }); });
               if (issues.length === 0) return null;
               return (
@@ -677,10 +886,18 @@ export default function SovereignPilotPage() {
                   onClick={() => setShowLastRunLogs((s) => !s)}
                   className="text-xs font-bold text-amber-400 hover:text-amber-300"
                 >
-                  {showLastRunLogs ? '▼' : '▶'} Last run logs ({(lastEnrichRun.logs?.length ?? 0) + (lastEnrichRun.steps?.length ?? 0)} entries) — {lastEnrichRun.at}
+                  {showLastRunLogs ? '▼' : '▶'} Last run logs ({(lastEnrichRun.diagnostic_log?.length ?? 0) + (lastEnrichRun.steps?.length ?? 0) + (lastEnrichRun.logs?.length ?? 0)} entries) — {lastEnrichRun.at}
                 </button>
                 {showLastRunLogs && (
-                  <div className="mt-2 max-h-48 overflow-y-auto bg-black/80 rounded border border-gray-700 p-2 text-[10px] leading-tight">
+                  <div className="mt-2 max-h-96 overflow-y-auto bg-black/80 rounded border border-gray-700 p-2 text-[10px] leading-tight">
+                    {lastEnrichRun.diagnostic_log && lastEnrichRun.diagnostic_log.length > 0 && (
+                      <div className="mb-3 pb-2 border-b border-gray-600">
+                        <p className="text-amber-400 font-bold mb-1">Diagnostic log (client + request/response)</p>
+                        {lastEnrichRun.diagnostic_log.map((line, i) => (
+                          <div key={`diag-${i}`} className={`font-mono whitespace-pre-wrap break-all ${/error|failed|Non-OK|Possible causes/i.test(line) ? 'text-red-400' : 'text-gray-300'}`}>{line}</div>
+                        ))}
+                      </div>
+                    )}
                     {lastEnrichRun.steps?.map((s, i) => (
                       <div key={i} className="text-cyan-300/90 mb-0.5">
                         step {i + 1}: {s.station} — {s.duration_ms}ms {s.status} {s.error ? `(${s.error})` : ''}
@@ -697,7 +914,9 @@ export default function SovereignPilotPage() {
                       <div key={`log-${i}`} className="text-gray-400 whitespace-pre-wrap break-all">{line}</div>
                     ))}
                     {(!lastEnrichRun.logs?.length && !lastEnrichRun.steps?.length) && (
-                      <div className="text-gray-500">No log lines or steps captured.</div>
+                      <div className="text-gray-500">
+                        {lastEnrichRun.diagnostic_log?.length ? 'No pipeline steps or logs. See Diagnostic log above.' : 'No log lines or steps captured.'}
+                      </div>
                     )}
                   </div>
                 )}
@@ -814,6 +1033,9 @@ export default function SovereignPilotPage() {
           <p className="text-xs text-yellow-600 mb-4">
             Real-time trauma signals from Chimera swarm
           </p>
+          <p className="text-[10px] text-gray-500 mb-2">
+            Data: mission:* .trauma_signals. Fire Swarm or Enrich (ChimeraStation) create mission:{'{id}'}; ChimeraStation writes trauma on timeout/fail. Chimera Core can add more via POST /api/v2-pilot/telemetry.
+          </p>
           <div className="space-y-2 max-h-80 overflow-y-auto">
             {traumaSignals.length === 0 ? (
               <div className="text-center text-gray-500 py-8">
@@ -853,8 +1075,11 @@ export default function SovereignPilotPage() {
         <h2 className="text-xl font-bold mb-4 flex items-center">
           👁️ NEURAL SIGHT LIVE FEED (Grounding Mirror)
         </h2>
-        <p className="text-xs text-cyan-600 mb-4">
+        <p className="text-xs text-cyan-600 mb-2">
           Real-time coordinate overlays • Blue = Blueprint • Green = VLM Click • Drift alerts
+        </p>
+        <p className="text-[10px] text-gray-500 mb-4">
+          Data: mission:{'{id}'} .screenshot_url, .grounding_bbox, .coordinate_drift. Chimera Core must POST to /api/v2-pilot/telemetry (set BRAINSCRAPER_URL). Select a processing mission.
         </p>
         <div className="grid grid-cols-2 gap-6">
           {/* Main Screenshot with Coordinate Overlay */}
@@ -979,8 +1204,11 @@ export default function SovereignPilotPage() {
         <h2 className="text-xl font-bold mb-4 flex items-center">
           🕵️ STEALTH HEALTH DASHBOARD (Fingerprint Audit)
         </h2>
-        <p className="text-xs text-purple-600 mb-4">
+        <p className="text-xs text-purple-600 mb-2">
           Real-time fingerprint monitoring • JA3, User-Agent, Proxy Pinning, Mouse Jitter
+        </p>
+        <p className="text-[10px] text-gray-500 mb-4">
+          Data: mission:{'{id}'} .fingerprint, .mouse_movements. Chimera Core must POST to /api/v2-pilot/telemetry (set BRAINSCRAPER_URL). Select a mission.
         </p>
         <div className="grid grid-cols-3 gap-6">
           {/* Fingerprint Snapshot */}

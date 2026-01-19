@@ -6,6 +6,8 @@ import os
 import requests
 from typing import Dict, Any, Optional
 
+from loguru import logger
+
 CENSUS_API_KEY = os.getenv("CENSUS_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
@@ -21,7 +23,7 @@ def enrich_demographics(contact_info: Dict[str, Any]) -> Dict[str, Any]:
     """
     zipcode = contact_info.get('zipcode')
     if not zipcode:
-        print("⚠️  No zipcode available for demographic enrichment")
+        logger.warning("No zipcode available for demographic enrichment")
         return {}
     
     result = {}
@@ -32,12 +34,11 @@ def enrich_demographics(contact_info: Dict[str, Any]) -> Dict[str, Any]:
         result['income'] = income_data.get('median_income') or income_data.get('income')
         result['income_range'] = income_data.get('income_range')
     
-    # Get age (if available from skip-trace, otherwise estimate)
+    # Get age from contact_info when available (e.g. skip-trace, Chimera, scraper).
+    # Census does not provide individual age by ZIP; zip-based median age would be
+    # inaccurate for individuals. No estimation is performed.
     age = contact_info.get('age')
-    if not age:
-        # TODO: Implement age estimation from public records
-        age = None
-    if age:
+    if age is not None:
         result['age'] = age
     
     # Address details (already in contact_info, but ensure completeness)
@@ -87,7 +88,7 @@ def get_income_by_zipcode(zipcode: str) -> Optional[Dict[str, Any]]:
             return data if isinstance(data, dict) else None
             
         except Exception as e:
-            print(f"⚠️  RapidAPI income lookup failed: {e}")
+            logger.warning("RapidAPI income lookup failed: {}", e)
     
     # Fallback to Census API
     if CENSUS_API_KEY:
@@ -115,6 +116,6 @@ def get_income_by_zipcode(zipcode: str) -> Optional[Dict[str, Any]]:
                     }
             
         except Exception as e:
-            print(f"⚠️  Census API income lookup failed: {e}")
+            logger.warning("Census API income lookup failed: {}", e)
     
     return None

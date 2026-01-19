@@ -1,27 +1,20 @@
 /**
  * Inngest Client and Event Definitions
- * 
- * Stub implementation for background job processing
- * In production, this would connect to Inngest cloud service
- */
-
-/**
- * Inngest client stub
- * In production, this would be: import { Inngest } from 'inngest';
+ *
+ * No-op implementation: events are logged only; no Inngest worker runs.
+ * Callers must not rely on background execution. For production, integrate
+ * the Inngest SDK and deploy Inngest workers.
  */
 export const inngest = {
-  send: async (event: { name: string; data: any; ts?: number }) => {
-    // Stub implementation - in production this would send to Inngest
-    console.log('[inngest] Event sent:', event.name, {
-      data: event.data,
-      scheduled: event.ts ? new Date(event.ts).toISOString() : 'immediate',
-    });
-    
-    // For now, we'll just log the event
-    // In production, this would be:
-    // return await inngestClient.send(event);
-    
-    return { ids: [`stub-${Date.now()}`] };
+  /** implemented: false — no event is enqueued; no worker will run. */
+  send: async (event: { name: string; data: unknown; ts?: number }) => {
+    if (process.env.NODE_ENV !== 'test') {
+      // eslint-disable-next-line no-console
+      console.log('[inngest] Event logged (no worker):', event.name, {
+        scheduled: event.ts ? new Date(event.ts).toISOString() : 'immediate',
+      });
+    }
+    return { ids: [`noop-${Date.now()}`], implemented: false };
   },
 };
 

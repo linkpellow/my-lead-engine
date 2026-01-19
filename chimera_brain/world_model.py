@@ -178,15 +178,12 @@ class WorldModel:
         return any(keyword in element_id.lower() for keyword in suspicious_keywords)
     
     def _might_trigger_captcha(self, state: CurrentState, action: ActionCandidate) -> bool:
-        """Check if action might trigger captcha"""
-        # Heuristic: Rapid clicking or suspicious patterns
-        # In production, this would analyze behavior history
-        return False  # Placeholder
-    
+        """Check if action might trigger captcha. Heuristic not implemented; returns False (allow action)."""
+        return False
+
     def _is_suspicious_input(self, state: CurrentState, action: ActionCandidate) -> bool:
-        """Check if input is suspicious"""
-        # Heuristic: Check for rate limiting patterns
-        return False  # Placeholder
+        """Check if input is suspicious (e.g. rate-limit patterns). Heuristic not implemented; returns False (allow)."""
+        return False
     
     def learn(
         self,

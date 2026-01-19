@@ -11,12 +11,11 @@ const SCRAPEGOAT_URL = process.env.SCRAPEGOAT_API_URL || process.env.SCRAPEGOAT_
 export async function GET() {
   try {
     if (!SCRAPEGOAT_URL) {
-      // Return mock data when Scrapegoat is not configured
       return NextResponse.json({
         spiders: [],
         total: 0,
         directory: 'scrapegoat/app/scraping/spiders',
-        note: 'Scrapegoat not configured. Set SCRAPEGOAT_API_URL environment variable.'
+        note: 'Scrapegoat not configured. Set SCRAPEGOAT_API_URL to list spiders.',
       });
     }
 

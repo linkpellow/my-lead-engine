@@ -3,6 +3,9 @@ Enhanced Station Base Class with Contracts & Prerequisites
 """
 from abc import ABC, abstractmethod
 from typing import Set, Tuple, Dict, Any
+
+from loguru import logger
+
 from .types import PipelineContext, StopCondition
 
 
@@ -56,32 +59,29 @@ class PipelineStation(ABC):
     async def execute(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
         """
         Execute station with automatic prerequisite and budget checks.
-        
-        This is the public interface - stations should implement process(), not execute().
-        
-        Args:
-            ctx: Pipeline context with current data and state
-            
-        Returns:
-            Tuple of (new_data_dict, stop_condition)
+        Logs start/complete; lets process() exceptions propagate to the engine
+        for precise failure localization (step, reason, suggested_fix).
         """
-        # 1. Automatic Prerequisite Check
+        logger.info("Starting step: %s", self.name)
+
+        # 1. Prerequisite check
         missing = self.required_inputs - ctx.available_fields
         if missing:
-            error_msg = f"Missing required inputs: {missing}"
+            logger.warning("Step %s: missing required inputs: %s", self.name, missing)
             return {}, StopCondition.FAIL
-            
-        # 2. Budget Check
+
+        # 2. Budget check
         if not ctx.can_afford(self.cost_estimate):
-            error_msg = f"Budget exceeded: ${ctx.total_cost:.2f} + ${self.cost_estimate:.2f} > ${ctx.budget_limit:.2f}"
+            logger.warning(
+                "Step %s: budget exceeded (total=%.2f + %.2f > limit=%.2f)",
+                self.name, ctx.total_cost, self.cost_estimate, ctx.budget_limit,
+            )
             return {}, StopCondition.SKIP_REMAINING
 
-        # 3. Run Logic
-        try:
-            return await self.process(ctx)
-        except Exception as e:
-            error_msg = str(e)
-            return {}, StopCondition.FAIL
+        # 3. Run logic – let exceptions propagate to engine for structured handling
+        result_data, condition = await self.process(ctx)
+        logger.info("Completed step: %s (condition=%s)", self.name, condition.value)
+        return result_data, condition
 
     @abstractmethod
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:

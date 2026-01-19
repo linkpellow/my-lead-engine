@@ -57,14 +57,14 @@ export async function POST(request: NextRequest) {
     // Import the LinkedIn handler directly instead of using fetch
     // This avoids SSL issues with internal API calls
     const { POST: linkedInHandler } = await import('@/app/api/linkedin-sales-navigator/route');
-    
-    // Create a mock request with the LinkedIn params
-    const mockRequest = {
+
+    // Adapt params into a NextRequest-like object the handler expects (request.json(), nextUrl)
+    const syntheticRequest = {
       json: async () => linkedInParams,
       nextUrl: request.nextUrl,
     } as NextRequest;
 
-    const linkedInResponse = await linkedInHandler(mockRequest);
+    const linkedInResponse = await linkedInHandler(syntheticRequest);
     const linkedInResult = await linkedInResponse.json();
 
     console.log('[V2_PILOT_QUICK_SEARCH] LinkedIn response status:', linkedInResponse.status);

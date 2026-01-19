@@ -5,7 +5,7 @@ Checks phone numbers against Do-Not-Call registry
 Token Priority:
 1. Redis (auth:usha:token) - Set by Auth Worker, refreshed automatically
 2. Environment variable (USHA_JWT_TOKEN) - Static fallback
-3. Cognito refresh - If refresh token available (TODO)
+3. Cognito refresh - Deferred; COGNITO_REFRESH_TOKEN is ignored until implemented.
 """
 import os
 import re
@@ -115,8 +115,8 @@ def get_usha_token() -> Optional[str]:
     Priority:
     1. Redis (auth:usha:token) - Dynamic, refreshed by Auth Worker
     2. Environment (USHA_JWT_TOKEN) - Static fallback
-    3. Cognito refresh - If available (TODO)
-    
+    3. Cognito refresh - Deferred; COGNITO_REFRESH_TOKEN not used.
+
     Returns:
         JWT token string or None if unavailable
     """
@@ -136,13 +136,9 @@ def get_usha_token() -> Optional[str]:
         logger.debug("🔑 Using static USHA_JWT_TOKEN from environment")
         return USHA_JWT_TOKEN
     
-    # Priority 3: Cognito refresh (TODO)
+    # Priority 3: Cognito refresh — not implemented; COGNITO_REFRESH_TOKEN ignored
     if COGNITO_REFRESH_TOKEN:
-        # logger.warning("⚠️ Cognito refresh token available but refresh logic not implemented")
-        # TODO: Implement Cognito token refresh
-        return None
-    
-    # logger.warning("⚠️ No USHA token available - set USHA_EMAIL/USHA_PASSWORD for Auth Worker")
+        logger.debug("Cognito refresh deferred; using Redis or USHA_JWT_TOKEN only")
     return None
 
 

@@ -19,15 +19,17 @@ def init_db():
     Safe to call multiple times (idempotent).
     """
     if not DATABASE_URL:
-        logger.warning("⚠️ DATABASE_URL not set - skipping database initialization")
+        logger.warning("DATABASE_URL not set, skipping database initialization")
         return False
     
-    logger.info("🗄️ Initializing database...")
-    
+    logger.info("Initializing database...")
+
+    conn = None
+    cur = None
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        
+
         # Create leads table (Golden Record: confidence_*, source_metadata)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS leads (
@@ -75,15 +77,25 @@ def init_db():
         """)
 
         conn.commit()
-        cur.close()
-        conn.close()
-        
-        logger.success("✅ Database initialized successfully")
+        logger.success("Database initialized successfully")
         return True
-        
+
     except Exception as e:
-        logger.error(f"❌ Database initialization failed: {e}")
+        if conn:
+            conn.rollback()
+        logger.exception("Database initialization failed: %s", e)
         return False
+    finally:
+        if cur:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

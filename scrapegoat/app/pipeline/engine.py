@@ -1,12 +1,17 @@
 """
-Pipeline Engine: Orchestrates stations with stop conditions and cost tracking
+Pipeline Engine: Orchestrates stations with stop conditions and cost tracking.
+Failures are localized with step, reason, and suggested_fix when stations raise
+ChimeraEnrichmentError.
 """
-import time
 import datetime
-from typing import List, Dict, Any, Optional
+import time
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
-from .types import PipelineContext, StopCondition
+
+from .exceptions import ChimeraEnrichmentError
 from .station import PipelineStation
+from .types import PipelineContext, StopCondition
 
 
 class PipelineEngine:
@@ -43,7 +48,12 @@ class PipelineEngine:
         step_collector: If provided, append per-station {station, duration_ms, condition, status, error?, recent_logs?}.
         log_buffer: If provided, on station exception the failing step gets recent_logs=last 20 lines for where/why.
         """
-        ctx = PipelineContext(data=initial_data.copy(), budget_limit=self.budget_limit)
+        data = initial_data.copy()
+        if not data.get("name") and (data.get("fullName") or data.get("full_name") or data.get("Name")):
+            data["name"] = data.get("fullName") or data.get("full_name") or data.get("Name") or ""
+        if not data.get("name") and (data.get("firstName") or data.get("lastName")):
+            data["name"] = f"{data.get('firstName') or ''} {data.get('lastName') or ''}".strip()
+        ctx = PipelineContext(data=data, budget_limit=self.budget_limit)
         steps = step_collector
 
         logger.info(f"🚀 Starting pipeline with {len(self.route)} stations (budget: ${self.budget_limit:.2f})")
@@ -52,7 +62,6 @@ class PipelineEngine:
             t0 = time.perf_counter()
             started_at = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
             try:
-                logger.debug(f"📍 Executing: {station.name}")
                 result_data, condition = await station.execute(ctx)
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 if steps is not None:
@@ -61,12 +70,29 @@ class PipelineEngine:
                 actual_cost = station.cost_estimate
                 ctx.update(result_data, station.name, actual_cost, condition)
                 if condition == StopCondition.SKIP_REMAINING:
-                    logger.info(f"🛑 Stop Condition hit at {station.name}. Finishing early.")
+                    logger.info("🛑 Stop Condition hit at %s. Finishing early.", station.name)
                     break
                 if condition == StopCondition.FAIL:
-                    logger.warning(f"⚠️  Station {station.name} failed.")
+                    logger.warning("⚠️  Station %s failed.", station.name)
                     continue
-                logger.debug(f"✅ {station.name} completed (cost: ${actual_cost:.4f}, total: ${ctx.total_cost:.4f})")
+                logger.debug("✅ %s completed (cost=%.4f, total=%.4f)", station.name, actual_cost, ctx.total_cost)
+            except ChimeraEnrichmentError as e:
+                duration_ms = int((time.perf_counter() - t0) * 1000)
+                recent = (log_buffer[-20:] if log_buffer and len(log_buffer) > 0 else []) if log_buffer else []
+                err_msg = f"{e.reason} (step={e.step})"
+                if e.suggested_fix:
+                    err_msg += f" [suggested_fix: {e.suggested_fix}]"
+                if steps is not None:
+                    step_entry = {"station": station.name, "started_at": started_at, "duration_ms": duration_ms, "condition": "fail", "status": "fail", "error": err_msg}
+                    if e.suggested_fix:
+                        step_entry["suggested_fix"] = e.suggested_fix
+                    if recent:
+                        step_entry["recent_logs"] = recent
+                    steps.append(step_entry)
+                logger.exception("💥 ChimeraEnrichmentError at %s: step=%s reason=%s", station.name, e.step, e.reason)
+                if e.suggested_fix:
+                    logger.info("  Suggested fix: %s", e.suggested_fix)
+                ctx.errors.append(err_msg)
             except Exception as e:
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 recent = (log_buffer[-20:] if log_buffer and len(log_buffer) > 0 else []) if log_buffer else []
@@ -75,7 +101,7 @@ class PipelineEngine:
                     if recent:
                         step_entry["recent_logs"] = recent
                     steps.append(step_entry)
-                logger.exception(f"💥 Critical Failure at {station.name}: {e}")
+                logger.exception("💥 Critical Failure at %s: %s", station.name, e)
                 ctx.errors.append(str(e))
         
         # Final summary

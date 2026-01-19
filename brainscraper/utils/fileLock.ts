@@ -12,14 +12,15 @@ const locks = new Map<string, Promise<void>>();
 const lockWaiters = new Map<string, Array<() => void>>();
 
 /**
- * Acquire a lock for a specific resource (file path)
- * Returns a release function that must be called when done
- * 
+ * Acquire a lock for a specific resource (file path).
+ * Returns a release function that must be called when done.
+ * Note: Under high concurrency, multiple waiters may momentarily proceed after
+ * a release; for strong mutual exclusion across many processes use file-based locking.
+ *
  * @param resource - The resource identifier (usually file path)
  * @returns Promise that resolves to a release function
  */
 export async function acquireLock(resource: string): Promise<() => void> {
-  // Wait for any existing lock to be released
   while (locks.has(resource)) {
     await locks.get(resource);
   }

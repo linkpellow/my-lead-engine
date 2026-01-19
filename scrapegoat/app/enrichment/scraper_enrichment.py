@@ -17,6 +17,8 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 from urllib.parse import quote_plus
 
+from loguru import logger
+
 from app.scraping.base import BaseScraper, BROWSER_MODE_AVAILABLE
 
 # HTML parsing (for people search sites that return HTML)
@@ -25,7 +27,7 @@ try:
     HTML_PARSING_AVAILABLE = True
 except ImportError:
     HTML_PARSING_AVAILABLE = False
-    print("⚠️ BeautifulSoup not available - HTML parsing disabled")
+    logger.warning("BeautifulSoup not available - HTML parsing disabled")
 
 
 def slugify(text: str, lowercase: bool = True) -> str:
@@ -75,7 +77,7 @@ def get_blueprint_dir() -> Path:
     return local_data
 
 BLUEPRINT_DIR = get_blueprint_dir()
-print(f"📁 Blueprint directory: {BLUEPRINT_DIR}")
+logger.info("Blueprint directory: {}", BLUEPRINT_DIR)
 
 # Priority order for sites (best to worst)
 SITE_PRIORITY = [
@@ -150,7 +152,7 @@ class BlueprintExtractor(BaseScraper):
     def _extract_from_html(self, data: Any) -> Dict[str, Any]:
         """Extract fields from HTML response using CSS selectors"""
         if not HTML_PARSING_AVAILABLE:
-            print("❌ BeautifulSoup not available for HTML parsing")
+            logger.error("BeautifulSoup not available for HTML parsing")
             return {}
         
         # Get HTML text from response
@@ -166,11 +168,9 @@ class BlueprintExtractor(BaseScraper):
         ]
         html_lower = html_text.lower()
         if any(indicator in html_lower for indicator in captcha_indicators):
-            # Check if it's actually a CAPTCHA page (not just mention of captcha)
-            if len(html_text) < 50000:  # Real content pages are usually larger
-                print(f"⚠️ CAPTCHA/block detected in HTML response")
+            if len(html_text) < 50000:
+                logger.warning("CAPTCHA/block detected in HTML response")
                 return {'_captcha_detected': True}
-        
         soup = BeautifulSoup(html_text, 'lxml')
         extracted = {}
         
@@ -215,7 +215,7 @@ class BlueprintExtractor(BaseScraper):
             
             return None
         except Exception as e:
-            print(f"❌ CSS extraction error: {e}")
+            logger.error("CSS extraction error: {}", e)
             return None
     
     def _build_url(self, params: Dict[str, Any]) -> str:
@@ -300,7 +300,7 @@ def load_blueprint(site_domain: str) -> Optional[Dict[str, Any]]:
         with open(blueprint_file, 'r') as f:
             return json.load(f)
     except Exception as e:
-        print(f"❌ Failed to load blueprint for {site_domain}: {e}")
+        logger.error("Failed to load blueprint for {}: {}", site_domain, e)
         return None
 
 
@@ -313,7 +313,7 @@ def save_blueprint(site_domain: str, blueprint: Dict[str, Any]) -> bool:
             json.dump(blueprint, f, indent=2)
         return True
     except Exception as e:
-        print(f"❌ Failed to save blueprint for {site_domain}: {e}")
+        logger.error("Failed to save blueprint for {}: {}", site_domain, e)
         return False
 
 
@@ -356,7 +356,7 @@ async def scrape_enrich(identity: Dict[str, Any]) -> Dict[str, Any]:
     available_sites = [s for s in SITE_PRIORITY if load_blueprint(s)]
     
     if not available_sites:
-        print("⚠️  No blueprint available for any enrichment site")
+        logger.warning("No blueprint available for any enrichment site")
         return {}
     
     # Build search parameters with ALL URL format variations
@@ -381,8 +381,8 @@ async def scrape_enrich(identity: Dict[str, Any]) -> Dict[str, Any]:
         'city_title': titleize_slug(city),
     }
     
-    print(f"🔍 Searching for: {full_name} in {city}, {state}")
-    print(f"   URL params: name_slug={params['name_slug']}, city_slug={params['city_slug']}")
+    logger.info("Searching for: {} in {}, {}", full_name, city, state)
+    logger.debug("URL params: name_slug={}, city_slug={}", params['name_slug'], params['city_slug'])
     
     # Try sites in parallel (up to 3 at once for speed)
     # If first succeeds, cancel others
@@ -400,7 +400,7 @@ async def scrape_enrich(identity: Dict[str, Any]) -> Dict[str, Any]:
         extractor = None
         try:
             mode_str = "BROWSER" if requires_browser else "STEALTH HTTP"
-            print(f"🌐 Attempting: {site} ({mode_str} + proxy)")
+            logger.info("Attempting: {} ({} + proxy)", site, mode_str)
             
             # FULL BaseScraper power: stealth + proxy + rate limiting + circuit breaking
             # Browser mode for sites with heavy JS protection
@@ -421,17 +421,17 @@ async def scrape_enrich(identity: Dict[str, Any]) -> Dict[str, Any]:
             
             # Validate response structure
             if not isinstance(result, dict):
-                print(f"⚠️  {site}: Invalid response structure")
+                logger.warning("{}: Invalid response structure", site)
                 return None
             
             # Check for CAPTCHA detected during extraction
             if result.get('_captcha_detected'):
-                print(f"🧩 {site}: CAPTCHA detected in response")
+                logger.warning("{}: CAPTCHA detected in response", site)
                 if not use_browser and BROWSER_MODE_AVAILABLE:
-                    print(f"🔄 {site}: Retrying with Browser Mode + CAPTCHA solving...")
+                    logger.info("{}: Retrying with Browser Mode + CAPTCHA solving...", site)
                     return await try_site(site, use_browser=True)
                 else:
-                    print(f"❌ {site}: Cannot bypass CAPTCHA (browser mode unavailable or already tried)")
+                    logger.error("{}: Cannot bypass CAPTCHA (browser mode unavailable or already tried)", site)
                     return None
             
             # Extract and normalize
@@ -467,23 +467,20 @@ async def scrape_enrich(identity: Dict[str, Any]) -> Dict[str, Any]:
                 normalized['email'] = str(email).strip()
             
             if normalized:
-                print(f"✅ {site}: Extracted {list(normalized.keys())}")
-                # Log successful extraction with stats
+                logger.info("{}: Extracted {}", site, list(normalized.keys()))
                 stats = extractor.get_stats()
-                print(f"   Stats: {stats['successful_requests']}/{stats['total_requests']} requests, {stats['retried_requests']} retries")
+                logger.debug("Stats: {}/{} requests, {} retries", stats['successful_requests'], stats['total_requests'], stats['retried_requests'])
                 return normalized
             else:
-                print(f"⚠️  {site}: No extractable data found")
+                logger.warning("{}: No extractable data found", site)
                 return None
             
         except Exception as e:
             error_msg = str(e)
-            print(f"❌ {site}: {error_msg[:100]}")
-            
-            # Auto-escalate to browser mode if blocked by Cloudflare/WAF
+            logger.error("{}: {}", site, error_msg[:100])
             if not use_browser and BROWSER_MODE_AVAILABLE:
                 if any(x in error_msg.lower() for x in ['403', '503', 'cloudflare', 'captcha', 'blocked', 'access denied']):
-                    print(f"🔄 {site}: Detected protection, retrying with Browser Mode...")
+                    logger.info("{}: Detected protection, retrying with Browser Mode...", site)
                     return await try_site(site, use_browser=True)
             
             return None
@@ -503,7 +500,7 @@ async def scrape_enrich(identity: Dict[str, Any]) -> Dict[str, Any]:
     for i, result in enumerate(results):
         if isinstance(result, dict) and result.get('phone'):
             successful_site = available_sites[i]
-            print(f"✅ Success with: {successful_site}")
+            logger.info("Success with: {}", successful_site)
             return result
     
     # If parallel attempts failed, try remaining sites sequentially
@@ -512,7 +509,7 @@ async def scrape_enrich(identity: Dict[str, Any]) -> Dict[str, Any]:
         if result and result.get('phone'):
             return result
     
-    print("❌ All scraping attempts failed")
+    logger.warning("All scraping attempts failed")
     return {}
 
 
@@ -592,5 +589,5 @@ def enrich_with_scraper(identity: Dict[str, Any]) -> Dict[str, Any]:
         finally:
             loop.close()
     except Exception as e:
-        print(f"❌ Error in scraper enrichment: {e}")
+        logger.error("Error in scraper enrichment: {}", e)
         return {}

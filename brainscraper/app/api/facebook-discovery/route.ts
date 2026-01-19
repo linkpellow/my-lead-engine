@@ -20,23 +20,14 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { groupId, groupUrl, keywords } = body;
     
-    // In production, this would call Facebook API
-    // For now, return mock data
-    const mockRecords: FacebookDiscoveryRecord[] = [
-      {
-        id: 'fb-1',
-        name: 'John Doe',
-        groupId: groupId || '12345',
-        groupUrl: groupUrl || '',
-        keywords: keywords || [],
-        discoveredAt: new Date().toISOString(),
-      },
-    ];
-    
+    // Facebook lead discovery is not implemented. Return empty with a clear signal
+    // so the UI does not display fabricated data. Implement when Facebook API is integrated.
     return NextResponse.json({
       success: true,
-      records: mockRecords,
-      total: mockRecords.length,
+      records: [] as FacebookDiscoveryRecord[],
+      total: 0,
+      implemented: false,
+      message: 'Facebook lead discovery is not implemented. Configure Facebook API to enable.',
     });
   } catch (error) {
     console.error('Error in Facebook discovery:', error);

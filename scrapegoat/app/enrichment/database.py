@@ -52,17 +52,16 @@ def save_to_database(enriched_lead: Dict[str, Any]) -> bool:
         True if saved successfully, False otherwise
     """
     if not DATABASE_URL:
-        logger.error("❌ DATABASE_URL not set, cannot save to database")
+        logger.error("DATABASE_URL not set, cannot save to database")
         return False
-    
+
+    conn = None
+    cur = None
     try:
-        # psycopg2.connect accepts postgresql:// URLs directly
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        
-        # Ensure table exists
         ensure_table_exists(cur)
-        
+
         # Extract values
         linkedin_url = enriched_lead.get('linkedinUrl') or enriched_lead.get('linkedin_url')
         name = enriched_lead.get('name') or f"{enriched_lead.get('firstName', '')} {enriched_lead.get('lastName', '')}".strip()
@@ -121,20 +120,31 @@ def save_to_database(enriched_lead: Dict[str, Any]) -> bool:
         
         result = cur.fetchone()
         lead_id = result[0] if result else None
-        
         conn.commit()
-        cur.close()
-        conn.close()
-        
-        logger.info(f"✅ Saved lead to database (ID: {lead_id}, LinkedIn: {linkedin_url})")
+        logger.info("Saved lead to database (id=%s, linkedin=%s)", lead_id, linkedin_url)
         return True
 
     except psycopg2.IntegrityError as e:
-        logger.warning(f"⚠️  Database integrity error (likely duplicate): {e}")
-        return True  # Consider duplicate as success
+        if conn:
+            conn.rollback()
+        logger.warning("Database integrity error (likely duplicate): %s", e)
+        return True  # Treat duplicate as success
     except Exception as e:
-        logger.exception(f"❌ Database save error: {e}")
+        if conn:
+            conn.rollback()
+        logger.exception("Database save error: %s", e)
         return False
+    finally:
+        if cur:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 def ensure_table_exists(cur):
     """Ensure leads table exists with Golden Record columns (confidence_*, source_metadata)."""

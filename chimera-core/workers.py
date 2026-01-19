@@ -1194,9 +1194,18 @@ class PhantomWorker:
         await self._check_403_and_rotate(mission_id, mission.get("carrier"))
 
         lead = mission.get("lead") or {}
+        first_name = lead.get("first_name") or lead.get("firstName") or ""
+        last_name = lead.get("last_name") or lead.get("lastName") or ""
+        _jn = " ".join(filter(None, [first_name, last_name])).strip()
+        full_name = (
+            lead.get("name") or lead.get("full_name") or lead.get("fullName") or _jn
+        ) or None
         lead_data = {
-            "full_name": lead.get("name") or lead.get("full_name"),
-            "linkedin_url": lead.get("linkedinUrl") or lead.get("linkedin_url"),
+            "full_name": full_name,
+            "first_name": first_name,
+            "last_name": last_name,
+            "linkedin_url": lead.get("linkedinUrl") or lead.get("linkedin_url") or mission.get("linkedin_url"),
+            "target_provider": mission.get("target_provider") or lead.get("target_provider"),
             **lead,
         }
         try:
@@ -1228,8 +1237,12 @@ class PhantomWorker:
 
         full_name = (
             lead_data.get("full_name")
+            or lead_data.get("fullName")
             or lead_data.get("name")
-            or " ".join(filter(None, [lead_data.get("first_name"), lead_data.get("last_name")])).strip()
+            or " ".join(filter(None, [
+                lead_data.get("first_name") or lead_data.get("firstName"),
+                lead_data.get("last_name") or lead_data.get("lastName"),
+            ])).strip()
         )
         if not full_name and source_url:
             derived_name = self._derive_name_from_profile_url(str(source_url))
@@ -1344,8 +1357,10 @@ class PhantomWorker:
         Choose people-search target from the Magazine. Respects target_provider (GPS router)
         or preferred_target. Falls back to TruePeopleSearch.
         """
-        name = lead_data.get("full_name") or lead_data.get("name")
-        if not name and not (lead_data.get("first_name") and lead_data.get("last_name")):
+        name = lead_data.get("full_name") or lead_data.get("fullName") or lead_data.get("name")
+        fn = lead_data.get("first_name") or lead_data.get("firstName")
+        ln = lead_data.get("last_name") or lead_data.get("lastName")
+        if not name and not (fn and ln):
             return None
 
         preferred = (

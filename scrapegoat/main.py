@@ -36,9 +36,10 @@ try:
             IndexType = None  # type: ignore
     import json
     from typing import Dict, Any
-    print("✅ [STARTUP] Core imports successful", flush=True)
+    from loguru import logger
+    logger.info("[STARTUP] Core imports successful")
 except ImportError as e:
-    print(f"❌ [STARTUP] Import error: {e}", flush=True)
+    print(f"❌ [STARTUP] Import error: {e}", flush=True)  # logger not yet available
     import traceback
     traceback.print_exc()
     sys.exit(1)
@@ -60,7 +61,7 @@ app.add_middleware(
 
 # Redis connection - lazy initialization to prevent startup failures
 redis_url = os.getenv("REDIS_URL") or os.getenv("APP_REDIS_URL") or "redis://localhost:6379"
-print(f"🔧 Redis URL configured: {redis_url[:30]}..." if len(redis_url) > 30 else f"🔧 Redis URL configured: {redis_url}")
+logger.info("Redis URL configured: %s...", redis_url[:50] if len(redis_url) > 50 else redis_url)
 
 _redis_client = None
 
@@ -84,7 +85,7 @@ async def startup():
         from init_db import init_db
         init_db()
     except Exception as e:
-        print(f"⚠️ init_db at startup (non-fatal): {e}")
+        logger.warning("init_db at startup (non-fatal): %s", e)
 
 
 @app.get("/")
@@ -855,7 +856,7 @@ async def commit_blueprint_to_swarm(request: Dict[str, Any]):
                 cur.close()
                 conn.close()
             except Exception as db_e:
-                pass  # non-fatal
+                logger.warning("Blueprint commit: DB upsert failed (non-fatal): %s", db_e)
 
         # Dojo → pipeline activation: mark domain as active so BlueprintLoader/Chimera can prefer it
         if r:
@@ -1017,27 +1018,14 @@ async def test_blueprint(request: Dict[str, Any]):
 if __name__ == "__main__":
     import uvicorn
     
-    print("=" * 60, flush=True)
-    print("🚀 SCRAPEGOAT API STARTUP", flush=True)
-    print("=" * 60, flush=True)
-    
     port = int(os.getenv("PORT", 8000))
-    print(f"🔧 Port: {port}", flush=True)
-    print(f"🔧 Python version: {sys.version}", flush=True)
-    print(f"🔧 Working directory: {os.getcwd()}", flush=True)
-    print(f"🔧 PYTHONUNBUFFERED: {os.getenv('PYTHONUNBUFFERED', 'not set')}", flush=True)
-    print("=" * 60, flush=True)
-    
+    logger.info("SCRAPEGOAT API STARTUP port=%s python=%s cwd=%s", port, sys.version.split()[0], os.getcwd())
     try:
-        print(f"🌐 Starting uvicorn on 0.0.0.0:{port}...", flush=True)
-        # Use 0.0.0.0 to listen on all interfaces (Railway requires this for healthchecks)
-        # This works with both IPv4 and IPv6 on Railway's network
+        logger.info("Starting uvicorn on 0.0.0.0:%s", port)
         uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
     except KeyboardInterrupt:
-        print("\n⚠️ Server interrupted by user", flush=True)
+        logger.info("Server interrupted by user")
         sys.exit(0)
     except Exception as e:
-        print(f"❌ Failed to start server: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        logger.exception("Failed to start server: %s", e)
         sys.exit(1)

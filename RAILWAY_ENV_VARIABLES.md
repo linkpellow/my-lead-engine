@@ -51,6 +51,14 @@ CENSUS_API_KEY=b4f15ee777... (for US income and demographic enrichment)
 CAPSOLVER_API_KEY=CAP-2540716108BC4D181465BF715D674904421D53CB7CE512D511EC80DEDB3744DD (for CAPTCHA solving)
 ```
 
+**Chimera Brain (Hive Mind, used by Chimera Deep Search station):**
+At least one of these must be set for `predict-path` and `store-pattern` to work.
+```bash
+CHIMERA_BRAIN_HTTP_URL=https://chimera-brain-v1-production.up.railway.app
+# or (gRPC address; if set and contains 50051, HTTP URL is derived as :8080):
+CHIMERA_BRAIN_ADDRESS=chimera-brain.railway.internal:50051
+```
+
 **Proxy & Scraping:**
 ```bash
 DECODO_API_KEY=your-decodo-key (for residential proxy rotation)

@@ -408,6 +408,20 @@ async def run_worker_swarm(workers: list):
                         logger.info(f"LPUSH chimera:results [{mission.get('mission_id')}]")
                     except Exception as e:
                         logger.warning(f"LPUSH chimera:results failed: {e}")
+                    if os.getenv("BRAINSCRAPER_URL"):
+                        try:
+                            from telemetry_client import TelemetryClient
+                            tc = TelemetryClient()
+                            screenshot = await worker.take_screenshot()
+                            await asyncio.to_thread(
+                                tc.push,
+                                mission_id=mission.get("mission_id"),
+                                screenshot=screenshot,
+                                vision_confidence=result.get("vision_confidence"),
+                                status="completed" if result.get("status") != "failed" else "failed",
+                            )
+                        except Exception as te:
+                            logger.debug("Telemetry push skipped: %s", te)
             except Exception as e:
                 logger.error(f"❌ Mission execution failed: [{mission_id}] {e}")
                 if mission.get("instruction") == "deep_search" and mission.get("mission_id"):
@@ -419,6 +433,19 @@ async def run_worker_swarm(workers: list):
                         )
                     except Exception:
                         pass
+                    if os.getenv("BRAINSCRAPER_URL"):
+                        try:
+                            from telemetry_client import TelemetryClient
+                            tc = TelemetryClient()
+                            await asyncio.to_thread(
+                                tc.push,
+                                mission_id=mission_id,
+                                status="failed",
+                                trauma_signals=["CHIMERA_FAILED"],
+                                trauma_details=str(e)[:500],
+                            )
+                        except Exception as te:
+                            logger.debug("Telemetry push (fail) skipped: %s", te)
                 try:
                     await asyncio.to_thread(r.lpush, mission_dlq, payload)
                 except Exception:

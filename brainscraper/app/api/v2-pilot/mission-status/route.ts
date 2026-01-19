@@ -64,12 +64,17 @@ interface TraumaSignal {
   details: string;
 }
 
-// Get Redis client
-function getRedisClient(): Redis {
+const emptyMissionResponse = () => ({
+  success: true,
+  missions: [] as Mission[],
+  trauma_signals: [] as TraumaSignal[],
+  stats: { total: 0, queued: 0, processing: 0, completed: 0, failed: 0, success_rate: 0 },
+  redis_connected: false,
+});
+
+function createRedisClient(): Redis | null {
   const redisUrl = process.env.REDIS_URL || process.env.APP_REDIS_URL;
-  if (!redisUrl) {
-    throw new Error('REDIS_URL not configured');
-  }
+  if (!redisUrl) return null;
   return new Redis(redisUrl, { maxRetriesPerRequest: 3 });
 }
 
@@ -83,18 +88,22 @@ function calculateEntropyScore(data: any): number {
 }
 
 export async function GET(request: NextRequest) {
+  let redis: Redis | null = null;
   try {
-    const redisClient = getRedisClient();
+    redis = createRedisClient();
+    if (!redis) {
+      return NextResponse.json(emptyMissionResponse());
+    }
 
     // Get all mission keys
-    const missionKeys = await redisClient.keys('mission:*');
+    const missionKeys = await redis.keys('mission:*');
     
     const missions: Mission[] = [];
     const traumaSignals: TraumaSignal[] = [];
 
     // Fetch mission data
     for (const key of missionKeys.slice(0, 100)) { // Limit to 100 most recent
-      const missionData = await redisClient.hgetall(key);
+      const missionData = await redis.hgetall(key);
       if (Object.keys(missionData).length === 0) continue;
 
       const missionId = key.replace('mission:', '');
@@ -229,28 +238,26 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      missions: missions.slice(0, 50), // Return most recent 50
-      trauma_signals: traumaSignals.slice(0, 20), // Return most recent 20
+      missions: missions.slice(0, 50),
+      trauma_signals: traumaSignals.slice(0, 20),
       stats,
+      redis_connected: true,
     });
   } catch (error) {
     console.error('Error fetching mission status:', error);
     return NextResponse.json(
-      { 
-        error: 'Internal server error', 
+      {
+        success: false,
+        error: 'Internal server error',
         message: error instanceof Error ? error.message : 'Unknown error',
         missions: [],
         trauma_signals: [],
-        stats: {
-          total: 0,
-          queued: 0,
-          processing: 0,
-          completed: 0,
-          failed: 0,
-          success_rate: 0,
-        },
+        stats: { total: 0, queued: 0, processing: 0, completed: 0, failed: 0, success_rate: 0 },
+        redis_connected: false,
       },
       { status: 500 }
     );
+  } finally {
+    redis?.quit().catch(() => {});
   }
 }

@@ -283,6 +283,9 @@ APP_CELERY_RESULT_BACKEND=${{redis-bridge.REDIS_URL}}/2
 OPENAI_API_KEY=sk-proj-...
 CENSUS_API_KEY=b4f15ee777...
 RAPIDAPI_KEY=your-key
+# Chimera Brain (Hive Mind: predict-path, store-pattern). At least one required for Chimera Deep Search.
+CHIMERA_BRAIN_HTTP_URL=https://chimera-brain-v1-production.up.railway.app
+# or CHIMERA_BRAIN_ADDRESS=chimera-brain.railway.internal:50051  (gRPC; HTTP URL derived as :8080)
 ```
 
 #### Scrapegoat Worker Service (5+ Replicas)

@@ -1,0 +1,105 @@
+# Chimera Enrichment: Failure Detection & Localization
+
+## Why / When / How
+
+**If anything fails during the chimera enrichment process we need to know precisely why and when in the pipeline it occurred so we can properly address how to fix it.**
+
+---
+
+## Failure Detection
+
+- **Always assume** the chimera enrichment process can fail at any step.
+- For every function or step in the pipeline, **wrap critical logic in structured try/except**.
+- **Raise or log** a clear, descriptive error when an exception occurs, including:
+  - **Step name**
+  - **Input context** (e.g. `mission_id`, `provider`, `linkedin_url`, or `ctx.data` keys)
+  - **Exception details** (preserve message and use `logger.exception` for traceback).
+
+---
+
+## Failure Localization
+
+- **Include timestamps and step identifiers** in all error messages or logs. (Loguru adds timestamps; always include `step`/station name in the message.)
+- **Always log when a step starts and ends successfully** to trace progress. Use `logger.info("Starting step: %s", name)` and `logger.info("Completed step: %s (condition=%s)", name, condition)`.
+- Use **`logger.info`** before and after each enrichment sub-step, and **`logger.exception`** or **`logger.error`** on failure.
+
+---
+
+## Failure Explanation
+
+- When catching exceptions, **preserve the original traceback** (`logger.exception`) and add **domain-specific context** (e.g. "Failed during Chimera result parse for mission_id=X provider=Y").
+- Use **`ChimeraEnrichmentError`** for critical failures:
+  - Subclass of `Exception` with `step`, `reason`, and optional `suggested_fix`.
+  - Raised from stations when the failure should stop the pipeline and be reported in `step_entry` with `error` and `suggested_fix`.
+  - Import from `app.pipeline.exceptions`.
+
+---
+
+## Recovery
+
+- **Favor early returns on error** unless a failure can be safely recovered from.
+- If a failure is **non-critical**, mark it clearly in logs (e.g. "non-critical, continuing") and **continue** with downstream steps where feasible.
+
+---
+
+## Implementation Pattern
+
+Use this pattern for critical station logic:
+
+```python
+async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
+    try:
+        result = await some_enrichment_call(ctx.data)
+        return result, StopCondition.CONTINUE
+    except SpecificError as e:
+        logger.exception("StepName: failed during X (input keys=%s): %s", list(ctx.data.keys()), e)
+        raise ChimeraEnrichmentError(
+            step="Step Name",
+            reason=str(e),
+            suggested_fix="Check Y and Z.",
+        )
+```
+
+For **non-critical** steps (e.g. Scraper Enrichment, Demographics):
+
+```python
+    except Exception as e:
+        logger.exception("StepName: failed (non-critical, continuing). context: %s", e)
+        return {}, StopCondition.CONTINUE
+```
+
+---
+
+## Engine & Station Contract
+
+- **`station.execute()`**: Logs "Starting step" and "Completed step"; does **not** catch `process()` exceptions so they propagate to the engine.
+- **`PipelineEngine`**: Catches `ChimeraEnrichmentError` and generic `Exception`. For `ChimeraEnrichmentError`, `step_entry` includes `error` and `suggested_fix`; `logger.exception` and `logger.info("  Suggested fix: ...")` are used.
+
+---
+
+## Code Review Signal
+
+**Flag any enrichment-related function that lacks:**
+
+- Structured try/except around critical logic
+- `logger.info` at step start/end or equivalent
+- `logger.exception` / `logger.error` with **step name and input context** on failure
+- For critical failures: `ChimeraEnrichmentError` with `reason` and `suggested_fix`
+
+**Ask:** *"Can someone reading the logs or traceback know exactly what failed, when it failed, and why?"*
+
+---
+
+## Relay to Cursor (get the pipeline fixed fast)
+
+**Best way to relay so we can plan fixes with no guesswork:**
+
+1. **Reproduce** the error (Enrich on v2-pilot, or run the failing path).
+2. **Copy for Cursor** (or **Download logs**) so we get:
+   - `errors_summary` (process-one, pipeline fails, **chimera timeouts/failures from logs**)
+   - `bottleneck_hint` (longest step, chimera_timeout_or_fail_count, most_failed_station)
+   - `last run` (processed, success, steps).
+3. **Paste** the Copy block into the chat (or attach the downloaded JSON).
+4. **For people-search/Chimera:** also paste **Railway logs for chimera-core** (last 50–100 lines). Scrapegoat does not see Core’s internal errors (captcha, selectors, navigation, browser).
+
+That gives: what broke, where, why (from our logs) + Core’s view (from Railway) so we can identify bottlenecks and plan fixes without guesswork.

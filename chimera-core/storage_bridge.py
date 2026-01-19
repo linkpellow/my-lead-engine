@@ -90,20 +90,18 @@ def upload_trace_to_storage(trace_path: Path, worker_id: str, mission_id: Option
         Cloud storage URL if successful, None otherwise
     """
     if not UPLOAD_TO_CLOUD:
-        # Save locally only
         local_path = save_trace_locally(trace_path, worker_id, mission_id)
         if local_path:
-            # Return local path as URL (can be accessed via Railway's file system or exposed endpoint)
             return f"file://{local_path}"
         return None
-    
-    # TODO: Implement cloud storage upload
-    # For now, save locally and return local path
+
+    # Cloud upload (S3/GCS/Railway) not implemented. When UPLOAD_TRACES_TO_CLOUD=true
+    # we still write locally and return file://. Implement upload_trace_to_storage
+    # for S3/GCS to enable true cloud upload.
     local_path = save_trace_locally(trace_path, worker_id, mission_id)
     if local_path:
-        logger.info(f"✅ Trace uploaded to storage: {local_path}")
+        logger.info("Trace written locally (cloud upload not implemented): %s", local_path)
         return f"file://{local_path}"
-    
     return None
 
 

@@ -7,6 +7,8 @@ import os
 import requests
 from typing import Dict, Any
 
+from loguru import logger
+
 TELNYX_API_KEY = os.getenv("TELNYX_API_KEY")
 
 # Known junk/VOIP carriers to reject
@@ -36,7 +38,7 @@ def validate_phone_telnyx(phone: str) -> Dict[str, Any]:
         Validation result with is_valid, is_mobile, is_voip, is_landline, carrier, is_junk
     """
     if not TELNYX_API_KEY:
-        print("⚠️  TELNYX_API_KEY not set, skipping Telnyx validation")
+        logger.warning("TELNYX_API_KEY not set, skipping Telnyx validation")
         # Return permissive result if API key not set (for development)
         return {
             'is_valid': True,
@@ -96,7 +98,7 @@ def validate_phone_telnyx(phone: str) -> Dict[str, Any]:
         }
         
     except requests.RequestException as e:
-        print(f"⚠️  Telnyx API error: {e}")
+        logger.warning("Telnyx API error: {}", e)
         # On API error, allow to proceed (fail open for development)
         # In production, you might want to fail closed
         return {
@@ -108,7 +110,7 @@ def validate_phone_telnyx(phone: str) -> Dict[str, Any]:
             'is_junk': False
         }
     except Exception as e:
-        print(f"❌ Telnyx validation error: {e}")
+        logger.error("Telnyx validation error: {}", e)
         return {
             'is_valid': False,
             'is_mobile': False,
@@ -138,22 +140,22 @@ def should_reject_lead(validation: Dict[str, Any]) -> bool:
     """
     # Reject if invalid
     if not validation.get('is_valid'):
-        print("🚫 Rejecting: Phone number is invalid")
+        logger.info("Rejecting: Phone number is invalid")
         return True
     
     # Reject if VOIP or Landline
     if validation.get('is_voip') or validation.get('is_landline'):
-        print(f"🚫 Rejecting: Phone is {validation.get('carrier')} ({'VOIP' if validation.get('is_voip') else 'Landline'})")
+        logger.info("Rejecting: Phone is {} ({})", validation.get('carrier'), 'VOIP' if validation.get('is_voip') else 'Landline')
         return True
     
     # Reject if junk carrier
     if validation.get('is_junk'):
-        print(f"🚫 Rejecting: Junk carrier detected: {validation.get('carrier')}")
+        logger.info("Rejecting: Junk carrier detected: {}", validation.get('carrier'))
         return True
     
     # Reject if not mobile
     if not validation.get('is_mobile'):
-        print(f"🚫 Rejecting: Phone is not mobile type")
+        logger.info("Rejecting: Phone is not mobile type")
         return True
     
     return False

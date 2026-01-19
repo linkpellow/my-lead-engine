@@ -2,6 +2,9 @@
 # with build context = brainscraper/ (e.g. docker build -f brainscraper/Dockerfile brainscraper).
 # For RAILWAY: use Root Directory = EMPTY and /Dockerfile at repo root (see /Dockerfile).
 FROM node:20-slim
+# Bump to force rebuild on cache issues: --build-arg PILOT_BUILD=$(date +%Y%m%d)
+ARG PILOT_BUILD=20260119
+RUN echo "pilot build $PILOT_BUILD"
 
 WORKDIR /app
 

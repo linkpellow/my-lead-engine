@@ -170,37 +170,29 @@ def process_lead(lead_data: Dict[str, Any]) -> bool:
         return False
 
 def worker_loop():
-    """
-    Main worker loop that continuously polls Redis queue
-    """
-    print("=" * 60)
-    print("🚀 Scrapegoat Redis Queue Worker (Production-Grade Pipeline Engine)")
-    print("=" * 60)
-    
-    # Get Redis connection
+    """Main worker loop that continuously polls Redis queue."""
+    logger.info("Scrapegoat Redis Queue Worker (Production-Grade Pipeline Engine)")
+
     try:
         redis_client = get_redis_client()
         redis_client.ping()
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-        print(f"✅ Connected to Redis: {redis_url[:30]}..." if len(redis_url) > 30 else f"✅ Connected to Redis: {redis_url}")
+        msg = f"{redis_url[:30]}..." if len(redis_url) > 30 else redis_url
+        logger.info("Connected to Redis: {}", msg)
     except Exception as e:
-        print(f"❌ Failed to connect to Redis: {e}")
+        logger.error("Failed to connect to Redis: {}", e)
         sys.exit(1)
-    
-    # Initialize pipeline engine (will print route visualization)
+
     try:
-        engine = get_pipeline_engine()
-        print()
+        get_pipeline_engine()
     except Exception as e:
-        print(f"❌ Failed to initialize pipeline: {e}")
+        logger.error("Failed to initialize pipeline: {}", e)
         sys.exit(1)
-    
-    print(f"📥 Listening on queue: {QUEUE_NAME}")
-    print(f"📤 Failed leads queue: {FAILED_QUEUE_NAME}")
-    print(f"🔄 Max retries per lead: {MAX_RETRIES}")
-    print(f"💰 Budget limit: ${BUDGET_LIMIT:.2f} per lead")
-    print("=" * 60)
-    print()
+
+    logger.info(
+        "Listening: queue={} failed={} max_retries={} budget=${:.2f}",
+        QUEUE_NAME, FAILED_QUEUE_NAME, MAX_RETRIES, BUDGET_LIMIT,
+    )
     
     # Worker loop
     retry_count = {}
@@ -222,68 +214,55 @@ def worker_loop():
                     success = process_lead(lead_data)
                     
                     if success:
-                        # Reset retry count on success
                         if lead_id in retry_count:
                             del retry_count[lead_id]
-                        print(f"✅ Lead '{lead_id}' processed successfully\n")
+                        logger.success("Lead '{}' processed successfully", lead_id)
                     else:
-                        # Increment retry count
                         retry_count[lead_id] = retry_count.get(lead_id, 0) + 1
-                        
                         if retry_count[lead_id] >= MAX_RETRIES:
-                            # Move to failed queue
-                            print(f"❌ Lead '{lead_id}' failed {MAX_RETRIES} times, moving to DLQ")
+                            logger.error("Lead '{}' failed {} times, moving to DLQ", lead_id, MAX_RETRIES)
                             redis_client.lpush(FAILED_QUEUE_NAME, lead_json)
                             del retry_count[lead_id]
                         else:
-                            # Re-queue for retry
                             delay = RETRY_DELAY_BASE * (2 ** (retry_count[lead_id] - 1))
-                            print(f"⏳ Retrying lead '{lead_id}' in {delay} seconds (attempt {retry_count[lead_id]}/{MAX_RETRIES})")
+                            logger.info(
+                                "Retrying lead '{}' in {}s (attempt {}/{})",
+                                lead_id, delay, retry_count[lead_id], MAX_RETRIES,
+                            )
                             time.sleep(delay)
                             redis_client.lpush(QUEUE_NAME, lead_json)
-                            
+
                 except json.JSONDecodeError as e:
-                    print(f"❌ Failed to parse lead JSON: {e}")
-                    print(f"📤 Moving invalid JSON to failed queue")
+                    logger.error("Failed to parse lead JSON: {}; moving to DLQ", e)
                     redis_client.lpush(FAILED_QUEUE_NAME, lead_json)
                 except Exception as e:
-                    print(f"❌ Unexpected error processing lead: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Move to failed queue on unexpected errors
+                    logger.exception("Unexpected error processing lead: {}", e)
                     redis_client.lpush(FAILED_QUEUE_NAME, lead_json)
-            
+
             else:
-                # Timeout - no leads in queue
-                # Print status every 60 seconds
                 if int(time.time()) % 60 == 0:
-                    queue_length = redis_client.llen(QUEUE_NAME)
-                    failed_length = redis_client.llen(FAILED_QUEUE_NAME)
-                    print(f"💤 Waiting for leads... (Queue: {queue_length}, Failed: {failed_length})")
-                
+                    qlen = redis_client.llen(QUEUE_NAME)
+                    flen = redis_client.llen(FAILED_QUEUE_NAME)
+                    logger.debug("Waiting for leads (queue={}, failed={})", qlen, flen)
+
         except redis.ConnectionError as e:
-            print(f"❌ Redis connection error: {e}")
-            print(f"⏳ Retrying connection in {RETRY_DELAY_BASE} seconds...")
+            logger.warning("Redis connection error: {}; retrying in {}s", e, RETRY_DELAY_BASE)
             time.sleep(RETRY_DELAY_BASE)
-            
-            # Reconnect
             try:
                 redis_client = get_redis_client()
                 redis_client.ping()
-                print("✅ Reconnected to Redis")
-            except:
-                print("❌ Failed to reconnect, will retry...")
-                
+                logger.info("Reconnected to Redis")
+            except Exception as re:
+                logger.warning("Reconnect failed: {}; will retry", re)
+
         except KeyboardInterrupt:
-            print("\n🛑 Received interrupt signal, shutting down gracefully...")
+            logger.info("Interrupt received, shutting down")
             break
         except Exception as e:
-            print(f"❌ Unexpected error in worker loop: {e}")
-            import traceback
-            traceback.print_exc()
-            time.sleep(5)  # Brief pause before retrying
-    
-    print("✅ Worker stopped")
+            logger.exception("Unexpected error in worker loop: {}", e)
+            time.sleep(5)
+
+    logger.info("Worker stopped")
 
 if __name__ == "__main__":
     worker_loop()

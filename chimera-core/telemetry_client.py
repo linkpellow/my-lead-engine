@@ -12,6 +12,7 @@ Pushes real-time diagnostic data to BrainScraper V2 Pilot interface:
 
 import os
 import base64
+import time
 import requests
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
@@ -214,7 +215,7 @@ class TelemetryClient:
             decision_trace=[{
                 'step': initial_step,
                 'action': 'Mission started',
-                'timestamp': int(os.times().elapsed * 1000),
+                'timestamp': int(time.time() * 1000),
                 'confidence': 1.0
             }]
         )
