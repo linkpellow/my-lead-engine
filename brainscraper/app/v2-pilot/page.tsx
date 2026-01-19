@@ -16,6 +16,9 @@ import Image from 'next/image';
  * NOT FOR END USERS - Internal testing only
  */
 
+/** Bump when deploying so you can confirm the live site has the new build. */
+const V2_PILOT_UI_VERSION = 1;
+
 interface Mission {
   id: string;
   name: string;
@@ -110,13 +113,27 @@ export default function SovereignPilotPage() {
     linkedin_url?: string;
     error?: string;
     message?: string;
-    steps?: Array<{ station: string; started_at?: string; duration_ms: number; condition: string; status: string; error?: string; recent_logs?: string[] }>;
+    steps?: Array<{
+      station: string;
+      started_at?: string;
+      duration_ms: number;
+      condition: string;
+      status: string;
+      error?: string;
+      recent_logs?: string[];
+      error_file?: string;
+      error_line?: number;
+      error_traceback?: string;
+      suggested_fix?: string;
+    }>;
     logs?: string[];
     diagnostic_log?: string[];
     http_status?: number;
     http_statusText?: string;
     error_name?: string;
     error_cause?: string;
+    error_stack?: string;
+    error_traceback?: string;
     failure_mode?: string;
     failure_at?: string;
     hint?: string;
@@ -281,12 +298,12 @@ export default function SovereignPilotPage() {
     }
   }, []);
 
-  // While stuck at "waiting_core" with no Core telemetry for 25s, show stale hint
+  // While stuck at "waiting_core" with no Core telemetry for 15s, show stale hint (fail-sooner)
   useEffect(() => {
     if (!isEnriching || waitingCoreSince == null) return;
     const started = waitingCoreSince;
     const t = setInterval(() => {
-      if (Date.now() - started > 25000) setCoreStaleHint(true);
+      if (Date.now() - started > 15000) setCoreStaleHint(true);
     }, 5000);
     return () => clearInterval(t);
   }, [isEnriching, waitingCoreSince]);
@@ -539,7 +556,7 @@ export default function SovereignPilotPage() {
             if (st === 'Chimera' && sb === 'waiting_core') {
               setWaitingCoreSince(Date.now());
             }
-            if (st === 'Chimera' && /^(deep_search_start|pivot_|captcha_|capsolver_|vlm_|extract_)/.test(sb)) {
+            if (st === 'Chimera' && /^(deep_search_start|pivot_|captcha_|capsolver_|vlm_|extract_|got_result|timeout|core_failed|parse_fail|core_bad_type|get_next_exhausted)/.test(sb)) {
               setWaitingCoreSince(null);
             }
           }
@@ -584,23 +601,36 @@ export default function SovereignPilotPage() {
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
-      logErr(`[${t()}] Request failed. name=${err.name} message=${err.message}`);
+      const rawMsg = err.message || String(e);
+      const causeMsg = (err as Error & { cause?: Error })?.cause?.message || '';
+      const isStreamAbort = /BodyStreamBuffer|aborted|AbortError/i.test(rawMsg) || /BodyStreamBuffer|aborted|AbortError/i.test(causeMsg);
+      logErr(`[${t()}] Request failed. name=${err.name} message=${rawMsg}`);
       logErr(`[${t()}] Possible causes: Scrapegoat down, SCRAPEGOAT_API_URL wrong, network/proxy, or CORS.`);
       const run = {
         at: new Date().toISOString(),
         processed: false,
-        error: err.message || 'Unknown',
+        error: isStreamAbort
+          ? 'Stream closed before run finished (timeout, tab closed, or network). Ensure platform/proxy timeouts ≥ 330s and try again.'
+          : rawMsg || 'Unknown',
         error_name: err.name,
+        error_stack: err.stack || undefined,
         diagnostic_log: diag,
-        failure_mode: 'NETWORK',
-        hint: 'Check SCRAPEGOAT_API_URL, network, CORS. If failure occurs after ~60–120s: platform (Vercel/Railway) or proxy may be closing the connection—ensure maxDuration ≥ 300 and no proxy timeout < 300s. If Chimera runs long, chimera-core must LPUSH so Scrapegoat does not BRPOP 240s; check chimera-core logs.',
+        failure_mode: 'NETWORK' as const,
+        hint: isStreamAbort
+          ? 'Connection aborted during stream. Check maxDuration ≥ 330, proxy timeouts, and that the tab stays open.'
+          : 'Check SCRAPEGOAT_API_URL, network, CORS. If failure occurs after ~60–120s: platform (Vercel/Railway) or proxy may be closing the connection—ensure maxDuration ≥ 330 and no proxy timeout < 330s. If Chimera runs long, chimera-core must LPUSH so Scrapegoat does not BRPOP to timeout (~90s); check chimera-core logs.',
       };
       setLastEnrichRun(run as any);
       persistLastRun(run);
       setShowLastRunLogs(true);
       setEnrichStatus('Request failed');
       const isFetchFailed = /failed to fetch|TypeError|network error/i.test(String(run.error)) || run.error_name === 'TypeError';
-      alert(`Error: ${run.error}${isFetchFailed ? '\n\nIf this occurs after ~60–120s: platform or proxy may be closing the connection (set maxDuration ≥ 300, no proxy timeout < 300s). Also check: chimera-core running and same Redis; chimera-core Railway logs for pivot/CAPTCHA/VLM.' : ''}\n\nSee Diagnostic log and Download logs.`);
+      const extra = isStreamAbort
+        ? '\n\nStream was closed (timeout, tab close, or proxy). Ensure maxDuration ≥ 330 and proxy ≥ 330s, and keep the tab open.'
+        : isFetchFailed
+          ? '\n\nIf this occurs after ~60–120s: platform or proxy may be closing the connection (set maxDuration ≥ 330, no proxy timeout < 330s). Also check: chimera-core running and same Redis; chimera-core Railway logs for pivot/CAPTCHA/VLM. After deploy: Chimera step fails in ~90s with heartbeats.'
+          : '';
+      alert(`Error: ${run.error}${extra}\n\nSee Diagnostic log and Download logs.`);
     } finally {
       setEnrichStatus(null);
       setEnrichProgress(null);
@@ -634,24 +664,44 @@ export default function SovereignPilotPage() {
   };
 
   // Shared: errors_summary + bottleneck_hint from lastEnrichRun (for Download and Copy for Cursor)
+  type ErrEntry = {
+    source: string;
+    where: string;
+    message: string;
+    recent_logs?: string[];
+    error_file?: string;
+    error_line?: number;
+    error_traceback?: string;
+    error_stack?: string;
+    suggested_fix?: string;
+  };
+
   const computeErrorsAndBottleneck = (run: typeof lastEnrichRun) => {
     const allLogLines = run?.logs ?? [];
-    const errs: { source: string; where: string; message: string; recent_logs?: string[] }[] = [];
+    const errs: ErrEntry[] = [];
     if (run?.error) {
       let msg = run.error;
       if (run.error_name) msg += ` (${run.error_name})`;
       if (run.error_cause) msg += ` [cause: ${run.error_cause}]`;
       if (run.http_status) msg += ` [HTTP ${run.http_status}]`;
-      errs.push({ source: 'enrichment', where: 'process-one', message: msg });
+      const e: ErrEntry = { source: 'enrichment', where: 'process-one', message: msg };
+      if (run.error_stack) e.error_stack = run.error_stack;
+      if (run.error_traceback) e.error_traceback = run.error_traceback;
+      errs.push(e);
     }
     run?.steps?.forEach((s) => {
       if (s.status === 'fail') {
-        errs.push({
+        const e: ErrEntry = {
           source: 'pipeline',
           where: s.station ?? '?',
           message: s.error || 'Station failed',
           recent_logs: s.recent_logs?.length ? s.recent_logs : undefined,
-        });
+        };
+        if (s.error_file) e.error_file = s.error_file;
+        if (s.error_line != null) e.error_line = s.error_line;
+        if (s.error_traceback) e.error_traceback = s.error_traceback;
+        if (s.suggested_fix) e.suggested_fix = s.suggested_fix;
+        errs.push(e);
       }
     });
     const chimeraRe = /Chimera|chimera/;
@@ -744,25 +794,76 @@ export default function SovereignPilotPage() {
     }
   };
 
-  // Copy for Cursor: builds a paste-ready block (errors, bottleneck, Chimera-core reminder)
+  // Copy for Cursor: builds a paste-ready block (errors with file:line, traceback, stack, recent_logs; bottleneck; last_log_lines)
+  const TRUNC_LOG = 35;
+  const TRUNC_LINE = 240;
+  const formatErr = (e: ErrEntry): string[] => {
+    const out: string[] = [];
+    out.push(`  [${e.source}] ${e.where}: ${e.message}`);
+    if (e.error_file != null && e.error_line != null) {
+      out.push(`    file:line => ${e.error_file}:${e.error_line}`);
+    } else if (e.error_file != null) {
+      out.push(`    file => ${e.error_file}`);
+    }
+    if (e.suggested_fix) out.push(`    suggested_fix: ${e.suggested_fix}`);
+    if (e.recent_logs?.length) {
+      out.push(`    recent_logs (${e.recent_logs.length}):`);
+      e.recent_logs.slice(0, 20).forEach((ln) => out.push(`      ${String(ln).slice(0, TRUNC_LINE)}`));
+      if (e.recent_logs.length > 20) out.push(`      ... and ${e.recent_logs.length - 20} more`);
+    }
+    if (e.error_traceback) {
+      const tb = e.error_traceback.trim().split('\n').slice(0, TRUNC_LOG);
+      out.push('    traceback:');
+      tb.forEach((ln) => out.push(`      ${String(ln).slice(0, TRUNC_LINE)}`));
+      if (e.error_traceback.split('\n').length > TRUNC_LOG) out.push(`      ... (traceback truncated)`);
+    }
+    if (e.error_stack) {
+      const st = e.error_stack.trim().split('\n').slice(0, TRUNC_LOG);
+      out.push('    stack:');
+      st.forEach((ln) => out.push(`      ${String(ln).slice(0, TRUNC_LINE)}`));
+      if (e.error_stack.split('\n').length > TRUNC_LOG) out.push(`      ... (stack truncated)`);
+    }
+    return out;
+  };
+
   const handleCopyForCursor = () => {
     const run = lastEnrichRun;
     if (!run) {
       alert('Run Enrich first, then use Copy for Cursor.');
       return;
     }
-    const { errorsSummary, bottleneck_hint } = computeErrorsAndBottleneck(run);
+    const { errorsSummary, bottleneck_hint, allLogLines } = computeErrorsAndBottleneck(run);
     const l = bottleneck_hint.longest_step as { station: string; duration_ms: number } | null;
     const mf = bottleneck_hint.most_failed_station as { station: string; fail_count: number } | null;
+
+    const errBlock = errorsSummary.length
+      ? errorsSummary.flatMap((e) => formatErr(e))
+      : ['  (none)'];
+
+    const stepDetails = (run.steps ?? []).map((s: { station?: string; status?: string; duration_ms?: number; error?: string; error_file?: string; error_line?: number; suggested_fix?: string }) => {
+      const base = `${s.station}(${s.status})${s.duration_ms ?? 0}ms`;
+      const extra: string[] = [];
+      if (s.error) extra.push(`err=${String(s.error).slice(0, 60)}`);
+      if (s.error_file != null && s.error_line != null) extra.push(`${s.error_file}:${s.error_line}`);
+      if (s.suggested_fix) extra.push(`fix=${String(s.suggested_fix).slice(0, 50)}`);
+      return extra.length ? `${base} [${extra.join('; ')}]` : base;
+    });
+
+    const lastLogs = allLogLines.slice(-40).map((ln: string) => String(ln).slice(0, TRUNC_LINE));
+
     const lines: string[] = [
       '--- v2-pilot: paste into Cursor to debug Chimera enrichment ---',
       '',
       'errors_summary:',
-      ...(errorsSummary.length ? errorsSummary.map((e) => `  [${e.source}] ${e.where}: ${e.message}${e.recent_logs?.length ? ` (recent_logs: ${e.recent_logs.length})` : ''}`) : ['  (none)']),
+      ...errBlock,
       '',
       `bottleneck_hint: longest_step=${l ? `${l.station} ${l.duration_ms}ms` : '-'}; chimera_timeout_or_fail_count=${bottleneck_hint.chimera_timeout_or_fail_count}; most_failed=${mf ? `${mf.station} (${mf.fail_count})` : '-'}`,
       '',
-      `last run: processed=${run.processed} success=${run.success}; at=${run.at}; steps: ${(run.steps ?? []).map((s: { station?: string; status?: string; duration_ms?: number }) => `${s.station}(${s.status})${s.duration_ms ?? 0}ms`).join(', ') || '-'}`,
+      `last run: processed=${run.processed} success=${run.success}; at=${run.at}`,
+      `steps: ${stepDetails.join(', ') || '-'}`,
+      '',
+      'last_log_lines (tail 40):',
+      ...lastLogs.map((ln) => `  ${ln}`),
       '',
       'For people-search/Chimera: also paste Railway logs for chimera-core (last 50–100 lines).',
       'AI: @chimera-core/workers.py @scrapegoat/app/pipeline/stations/enrichment.py @scrapegoat/app/pipeline/stations/blueprint_loader.py @chimera-core/main.py @scrapegoat/main.py and rule debug-enrichment-with-ai. See PEOPLE_SEARCH_CHECKLIST.md § Debug with AI.',
@@ -795,6 +896,13 @@ export default function SovereignPilotPage() {
 
   return (
     <div className="min-h-screen bg-black text-green-400 p-8 font-mono">
+      {/* Version badge: bump V2_PILOT_UI_VERSION when deploying to verify the live site. */}
+      <div
+        className="fixed top-3 right-3 z-[100] px-2.5 py-1 rounded border border-green-500/70 bg-black/90 text-green-400 text-xs font-mono font-bold"
+        title="Bump V2_PILOT_UI_VERSION in page.tsx on each deploy to confirm the site has the new build"
+      >
+        v{V2_PILOT_UI_VERSION}
+      </div>
       {/* Header */}
       <div className="mb-8 border-b border-green-500 pb-4 flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -811,7 +919,7 @@ export default function SovereignPilotPage() {
             AI debug: Paste in Cursor with @chimera-core/workers.py @scrapegoat/app/pipeline/stations/enrichment.py @scrapegoat/app/pipeline/stations/blueprint_loader.py @chimera-core/main.py @scrapegoat/main.py and rule debug-enrichment-with-ai. Steps: PEOPLE_SEARCH_CHECKLIST.md § Debug with AI.
           </p>
           <p className="text-[10px] text-gray-600 mt-0.5">
-            build 2026-01-19 — if you don’t see this, hard-refresh or check deploy/cache
+            Version badge top-right — bump V2_PILOT_UI_VERSION on each deploy to confirm the site updated
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
@@ -979,7 +1087,7 @@ export default function SovereignPilotPage() {
                     <p className="text-[10px] font-bold text-amber-400 mb-1">Diagnostic (root cause) — where the bot is:</p>
                     {coreStaleHint && (
                       <div className="mb-2 p-1.5 rounded bg-red-950/40 border border-red-500/60 text-[10px] text-red-300">
-                        No events from Chimera Core for 25s — is it running and using the same Redis? Check chimera-core logs and REDIS_URL.
+                        No result from Chimera Core for 15s. Timeout ~90s. Check chimera-core Railway logs (pivot_*, capsolver_*, DOM) and REDIS_URL.
                       </div>
                     )}
                     <div className="flex items-center gap-3 mb-1">

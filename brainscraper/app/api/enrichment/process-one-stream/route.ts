@@ -7,7 +7,7 @@
 import { getScrapegoatBase } from '@/utils/scrapegoatClient';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
+export const maxDuration = 330; // must be >= STREAM_TIMEOUT_MS/1000 so platform does not kill before our abort
 
 const STREAM_TIMEOUT_MS = 330_000; // 330s so Chimera BRPOP 240s + pipeline overhead can finish
 
@@ -21,12 +21,16 @@ export async function POST() {
     res = await fetch(url, { method: 'POST', signal: controller.signal });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    const isAbort = e instanceof Error && e.name === 'AbortError';
+    const isAbort =
+      e instanceof Error &&
+      (e.name === 'AbortError' || /BodyStreamBuffer|aborted/i.test(msg));
     return new Response(
       JSON.stringify({
         done: true,
         processed: false,
-        error: isAbort ? `Scrapegoat stream timeout after ${STREAM_TIMEOUT_MS / 1000}s` : `Scrapegoat fetch error: ${msg}`,
+        error: isAbort
+          ? `Stream closed before completion (timeout or connection closed). Ensure maxDuration ≥ 330 and proxy timeouts ≥ 330s.`
+          : `Scrapegoat fetch error: ${msg}`,
       }) + '\n',
       { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } }
     );
