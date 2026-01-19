@@ -38,7 +38,7 @@ BUDGET_LIMIT = float(os.getenv("PIPELINE_BUDGET_LIMIT", "5.0"))  # Override budg
 
 def get_redis_client() -> redis.Redis:
     """Get Redis client connection"""
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    redis_url = os.getenv("REDIS_URL") or os.getenv("APP_REDIS_URL") or "redis://localhost:6379"
     return redis.from_url(redis_url)
 
 # Global pipeline engine (initialized once)
@@ -176,7 +176,7 @@ def worker_loop():
     try:
         redis_client = get_redis_client()
         redis_client.ping()
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        redis_url = os.getenv("REDIS_URL") or os.getenv("APP_REDIS_URL") or "redis://localhost:6379"
         msg = f"{redis_url[:30]}..." if len(redis_url) > 30 else redis_url
         logger.info("Connected to Redis: {}", msg)
     except Exception as e:
