@@ -258,12 +258,14 @@ DEFAULT_HEADERS = {
     "Cache-Control": "no-cache",
 }
 
-# Chrome impersonation profiles for curl_cffi
+# Chrome impersonation profiles for curl_cffi (must match installed version)
+# curl_cffi 0.5.x: chrome99, chrome100, chrome101, chrome104, chrome107, chrome110 only
+# chrome116, chrome119, chrome120 require curl_cffi >= 0.6.0
 IMPERSONATE_PROFILES = [
-    "chrome120",
-    "chrome119", 
-    "chrome116",
     "chrome110",
+    "chrome107",
+    "chrome104",
+    "chrome101",
 ]
 
 

@@ -47,9 +47,11 @@ curl -s https://<CHIMERA_BRAIN_PUBLIC>/health
 
 ### 4. Test
 
+**Quick wins (one site, faster timeouts):** See **`ENRICHMENT_TONIGHT.md`** — set `CHIMERA_STATION_TIMEOUT=25`, `CHIMERA_PROVIDERS=FastPeopleSearch` on Scrapegoat, redeploy, then test.
+
 1. **v2-pilot** → Pre-flight **Check** (Redis ✓, Scrapegoat ✓).
 2. **Queue CSV:** Upload a CSV with header `LinkedIn URL,Name,Location` and at least one data row. Example: `https://linkedin.com/in/jane,Jane Doe,Denver CO`. Click **QUEUE FOR ENRICHMENT**.
-3. **Enrich:** Click **ENRICH**. Expect a stream (Identity → BlueprintLoader → Chimera → …) then `Done` or `Enriched 1`. If it stalls or errors, use **Download logs**.
+3. **Enrich:** Click **ENRICH**. Expect progress (Identity → BlueprintLoader → Chimera → …) then `Done` or `Enriched 1`. Uses start+poll (no long-lived stream). If it stalls or errors, use **Download logs**.
 4. **Results:** Open **/enriched** or check Download logs. On failure: § Troubleshooting, § Debug with AI, and chimera-core Railway logs.
 
 **If the test passes:** Queue more CSV → Enrich. People-search runs via ChimeraStation → Chimera Core → `_MAGAZINE_TARGETS` and `blueprint:{domain}`.
@@ -107,7 +109,7 @@ curl -s https://<CHIMERA_BRAIN_PUBLIC>/health
 
 Leads in `leads_to_enrich` must include **`name`** (or **`fullName`**) or **`firstName`** and **`lastName`**, and **`linkedinUrl`**. Pipeline normalizes `name`; ChimeraStation returns FAIL if no searchable name.
 
-**v2-pilot Enrich:** BrainScraper needs `SCRAPEGOAT_API_URL` or `SCRAPEGOAT_URL` to reach Scrapegoat `POST /worker/process-one-stream`. See `V2_PILOT_RAILWAY_ALIGNMENT.md` §2.
+**v2-pilot Enrich:** BrainScraper needs `SCRAPEGOAT_API_URL` or `SCRAPEGOAT_URL`. Enrich uses **start+poll** (POST /api/enrichment/start → GET /api/enrichment/status every 2s). No long-lived stream — avoids BodyStreamBuffer/AbortError when runs exceed 5–10 min. See `V2_PILOT_RAILWAY_ALIGNMENT.md` §2.
 
 ---
 
@@ -164,14 +166,23 @@ Use when a run fails or stalls and you need to correlate logs with code.
 
 ## Troubleshooting: 0% success, network error, or BRPOP timeout
 
-- **`process-one: network error (TypeError)` after ~60–120s**  
-  The request from the browser to BrainScraper (or BrainScraper to Scrapegoat) was closed before the pipeline finished. Often a **platform or proxy timeout** (e.g. Vercel 60s, or a proxy &lt; 300s). **Fix:** set `maxDuration` ≥ 300 for the process-one-stream route; ensure no reverse proxy or load balancer times out before 300s. BrainScraper `process-one-stream` and the v2-pilot client use a 330s timeout. BrainScraper and the client use 330s; the limiting factor is usually the host (Vercel/Railway) or a proxy in front.
+**v2-pilot Enrich uses start+poll** (POST /api/enrichment/start, then GET /api/enrichment/status every 2s). There is no long-lived stream, so **BodyStreamBuffer/AbortError and stream-timeout** from the Enrich button should not occur. If you still see them, you may be using an older build or a different entry point.
+
+- **`process-one: network error (TypeError)` or `BodyStreamBuffer was aborted` (legacy stream)**  
+  If using the legacy stream (process-one-stream), the request was closed before the pipeline finished—often a **platform or proxy timeout** (e.g. Vercel 60s, or proxy &lt; 300s). **Fix:** use v2-pilot Enrich (start+poll); or set `maxDuration` ≥ 300 and ensure no proxy times out before 300s.
+
+- **`[Chimera] waiting_core: elapsed=5s/90s` … up to 90s, then `timeout` — Chimera Core never LPUSHed**  
+  Scrapegoat LPUSHes to `chimera:missions` and BRPOPs `chimera:results:{id}`. If you see only `waiting_core` heartbeats and no `got_result`, **Chimera Core is not LPUSHing**. **Causes:** (1) Chimera Core **not running** or **not on the same Redis** (`REDIS_URL` unset or different → mission consumer never gets the mission); (2) Chimera Core stuck before LPUSH (browser launch, pivot, CAPTCHA, VLM) or crashing. **Fix:** `railway link` → select **chimera-core** → `railway logs --tail 100`. Look for `[ChimeraCore]` (e.g. `execute_mission`, `pivot_*`, `capsolver_*`, `mission_timeout`). If there are no mission logs, Chimera Core is not consuming `chimera:missions` → set `REDIS_URL` on chimera-core to match Scrapegoat and redeploy: `./scripts/railway-people-search-align.sh`.
 
 - **Many `BRPOP timeout 120s` / `240s` across all 6 providers (FastPeopleSearch, TruePeopleSearch, ZabaSearch, SearchPeopleFree, ThatsThem, AnyWho)**  
-  ChimeraStation pushes to `chimera:missions` and BRPOPs `chimera:results:{id}`. No LPUSH from Chimera Core in time. **Causes:** (1) Chimera Core not running or **not on the same Redis** (e.g. `REDIS_URL` unset on chimera-core → mission consumer disabled); (2) Chimera Core stuck before LPUSH (pivot, CAPTCHA, or VLM) or crashing. **Fix:** Run `./scripts/railway-people-search-align.sh` to set chimera-core `REDIS_URL` and Scrapegoat `CHIMERA_STATION_TIMEOUT=90`, then redeploy. Confirm Chimera Core is up and `REDIS_URL` matches Scrapegoat. Get **chimera-core Railway logs** (last 50–100 lines) and look for `[ChimeraCore]` (e.g. `pivot_fill_fail`, `capsolver_*`, `mission timeout`). Chimera Core has `MISSION_TIMEOUT_SEC` (default 90): if a mission exceeds that it LPUSHes `{status: "failed", error: "mission_timeout_90s"}` so Scrapegoat does not wait the full 240s.
+  Same root cause as above: no LPUSH from Chimera Core. **Fix:** Run `./scripts/railway-people-search-align.sh` to set chimera-core `REDIS_URL` and Scrapegoat `CHIMERA_STATION_TIMEOUT=90`, then redeploy. Get **chimera-core Railway logs** and look for `[ChimeraCore]` (e.g. `pivot_fill_fail`, `capsolver_*`, `mission timeout`). Chimera Core has `MISSION_TIMEOUT_SEC` (default 90): if a mission exceeds that it LPUSHes `{status: "failed", error: "mission_timeout_90s"}` so Scrapegoat does not wait the full 240s.
 
 - **`all_log_lines` empty and `processed: false`**  
-  The run never reached pipeline steps (or the stream was cut before the `done` payload). Usually the same as "network error" above—connection closed before Scrapegoat could stream back.
+  The run never reached pipeline steps or failed before returning a result. With start+poll: if status becomes `error`, check `result.error` or Scrapegoat logs. With legacy stream: connection may have closed before the `done` payload.
+
+### Faster iteration when debugging
+
+- **Chimera timeouts in ~25s instead of 90s:** Set `CHIMERA_STATION_TIMEOUT=25` on Scrapegoat (Railway env). Scrapegoat will BRPOP for 25s; if Chimera Core is not LPUSHing, you see `timeout` in ~25s instead of 90s. **Revert to 90 for production.**
 
 ---
 

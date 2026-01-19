@@ -228,6 +228,14 @@ class TruePeopleSearchSpider(BaseScraper):
             )
             
             if not is_valid:
+                # Gap: we don't run CAPTCHA detection/solver in browser path. At least detect and log.
+                try:
+                    from app.scraping.captcha_solver import detect_captcha_in_html
+                    cap = detect_captcha_in_html(html)
+                    if cap:
+                        logger.warning("🛡️ CAPTCHA detected in browser page (solver not wired for Playwright): %s", cap.get("type"))
+                except Exception:
+                    pass
                 logger.warning("🛡️ Page appears to be blocked or empty")
                 return None
             

@@ -16,7 +16,8 @@ import random
 from typing import Any, Dict, List, Optional, Set
 
 # Rotational Magazine: people-search providers
-MAGAZINE = [
+# Override with CHIMERA_PROVIDERS (comma-separated) to try only one or a few, e.g. CHIMERA_PROVIDERS=FastPeopleSearch
+_DEFAULT_MAGAZINE = [
     "FastPeopleSearch",
     "TruePeopleSearch",
     "ZabaSearch",
@@ -24,6 +25,8 @@ MAGAZINE = [
     "ThatsThem",
     "AnyWho",
 ]
+_env = (os.getenv("CHIMERA_PROVIDERS") or "").strip()
+MAGAZINE = [p.strip() for p in _env.split(",") if p.strip()] if _env else _DEFAULT_MAGAZINE
 
 # Reward deltas (applied to provider stats)
 REWARD_SUCCESS = 1.0
