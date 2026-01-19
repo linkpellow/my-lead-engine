@@ -36,7 +36,7 @@ from app.enrichment.identity_resolution import resolve_identity
 from app.enrichment.scraper_enrichment import enrich_with_scraper, scrape_enrich
 from app.enrichment.skip_tracing import skip_trace
 from app.enrichment.telnyx_gatekeep import validate_phone_telnyx
-from app.enrichment.dnc_scrub import scrub_dnc
+# scrub_dnc (DNC) disabled for now – DNCGatekeeperStation is a no-op
 from app.enrichment.demographics import enrich_demographics
 from app.enrichment.database import save_to_database
 
@@ -498,17 +498,17 @@ class TelnyxGatekeepStation(PipelineStation):
 class DNCGatekeeperStation(PipelineStation):
     """
     Station 4: DNC Scrubbing
-    Checks phone against Do-Not-Call registry
-    CRITICAL: Stops enrichment if on DNC list
+    DNC DISABLED: No-op, always continues. Set dnc_status=SKIPPED, can_contact=True.
+    To re-enable: call scrub_dnc(phone) and handle SKIP_REMAINING when can_contact=False.
     """
     
     @property
     def name(self) -> str:
-        return "DNC Scrubbing"
+        return "DNC Scrubbing (disabled)"
     
     @property
     def required_inputs(self) -> set:
-        return {"phone"}
+        return set()  # No required inputs when disabled
     
     @property
     def produces_outputs(self) -> set:
@@ -516,32 +516,11 @@ class DNCGatekeeperStation(PipelineStation):
     
     @property
     def cost_estimate(self) -> float:
-        return 0.02  # USHA DNC API cost
+        return 0.0  # No API call when disabled
     
     async def process(self, ctx: PipelineContext) -> Tuple[Dict[str, Any], StopCondition]:
-        """Check DNC registry - STOP if on DNC list"""
-        phone = ctx.data.get('phone')
-        if not phone:
-            return {}, StopCondition.FAIL
-        
-        try:
-            # Run sync function in thread pool
-            loop = asyncio.get_event_loop()
-            dnc_result = await loop.run_in_executor(None, scrub_dnc, phone)
-            
-            can_contact = dnc_result.get('can_contact', True)
-            
-            if not can_contact:
-                logger.warning(f"🚫 Lead on DNC list: {dnc_result.get('status')} - {dnc_result.get('reason')}")
-                return dnc_result, StopCondition.SKIP_REMAINING  # STOP HERE - on DNC
-            
-            logger.info(f"✅ DNC status: {dnc_result.get('status')} - Safe to contact")
-            return dnc_result, StopCondition.CONTINUE
-            
-        except Exception as e:
-            logger.error(f"DNC scrub error: {e}")
-            # Fail open - continue if DNC check fails
-            return {"dnc_status": "UNKNOWN", "can_contact": True}, StopCondition.CONTINUE
+        """No-op: DNC disabled. Always continue with can_contact=True."""
+        return {"dnc_status": "SKIPPED", "can_contact": True}, StopCondition.CONTINUE
 
 
 class DemographicsStation(PipelineStation):
