@@ -182,7 +182,8 @@ class ChimeraStation(PipelineStation):
     CHIMERA_MISSIONS = "chimera:missions"
     CHIMERA_RESULTS_PREFIX = "chimera:results:"
     SYSTEM_STATE_PAUSED = "SYSTEM_STATE:PAUSED"
-    DEFAULT_TIMEOUT = int(os.getenv("CHIMERA_STATION_TIMEOUT", "120"))
+    DEFAULT_TIMEOUT = int(os.getenv("CHIMERA_STATION_TIMEOUT", "90"))
+    BRPOP_INTERVAL = 5  # Short BRPOP in loop so we can emit heartbeats and fail on total elapsed
     PAUSE_POLL_SEC = 15
     PAUSE_WAIT_MAX = 120
 
@@ -317,11 +318,20 @@ class ChimeraStation(PipelineStation):
                 telemetry_task = None
                 if getattr(ctx, "progress_queue", None) is not None:
                     telemetry_task = asyncio.create_task(self._consume_telemetry(mission_id, r, ctx, telemetry_stop))
+                raw = None
                 try:
-                    raw = await loop_exec.run_in_executor(
-                        None,
-                        lambda k=results_key: r.brpop(k, timeout=self.DEFAULT_TIMEOUT),
-                    )
+                    while True:
+                        part = await loop_exec.run_in_executor(
+                            None,
+                            lambda k=results_key, to=self.BRPOP_INTERVAL: r.brpop(k, timeout=to),
+                        )
+                        if part is not None:
+                            raw = part
+                            break
+                        elapsed = int(time.perf_counter() - t0)
+                        if elapsed >= self.DEFAULT_TIMEOUT:
+                            break
+                        self._emit(ctx, "waiting_core", f"elapsed={elapsed}s / {self.DEFAULT_TIMEOUT}s — Chimera Core must LPUSH to {results_key}")
                 finally:
                     telemetry_stop.set()
                     if telemetry_task is not None:

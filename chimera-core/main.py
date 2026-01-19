@@ -409,7 +409,7 @@ async def run_worker_swarm(workers: list):
             except Exception:
                 pass
 
-            mission_timeout = int(os.getenv("MISSION_TIMEOUT_SEC", "200"))
+            mission_timeout = int(os.getenv("MISSION_TIMEOUT_SEC", "90"))
             try:
                 logger.info(f"[ChimeraCore] executing: instruction={mission.get('instruction')} mission_id={mission_id} timeout={mission_timeout}s")
                 result = await asyncio.wait_for(worker.execute_mission(mission), timeout=mission_timeout)

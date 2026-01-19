@@ -606,6 +606,7 @@ export default function SovereignPilotPage() {
       const isStreamAbort = /BodyStreamBuffer|aborted|AbortError/i.test(rawMsg) || /BodyStreamBuffer|aborted|AbortError/i.test(causeMsg);
       logErr(`[${t()}] Request failed. name=${err.name} message=${rawMsg}`);
       logErr(`[${t()}] Possible causes: Scrapegoat down, SCRAPEGOAT_API_URL wrong, network/proxy, or CORS.`);
+      const cause = (err as Error & { cause?: Error })?.cause;
       const run = {
         at: new Date().toISOString(),
         processed: false,
@@ -613,6 +614,7 @@ export default function SovereignPilotPage() {
           ? 'Stream closed before run finished (timeout, tab closed, or network). Ensure platform/proxy timeouts ≥ 330s and try again.'
           : rawMsg || 'Unknown',
         error_name: err.name,
+        error_cause: cause ? (cause instanceof Error ? cause.message : String(cause)) : undefined,
         error_stack: err.stack || undefined,
         diagnostic_log: diag,
         failure_mode: 'NETWORK' as const,

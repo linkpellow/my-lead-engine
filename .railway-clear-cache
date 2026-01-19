@@ -1,0 +1,13 @@
+# Instant cache busting is ON for all services (ensures newest code is pushed every deploy).
+#
+# Dockerfile services (brainscraper, scrapegoat, chimera-core, chimera_brain):
+#   - NO_CACHE = "1" in each railway.toml [environments.production] → Railway runs docker build --no-cache.
+#   - ARG RAILWAY_GIT_COMMIT_SHA=local + RUN in each Dockerfile → when Railway sets the commit SHA, a new
+#     commit invalidates that layer and all subsequent layers (extra safety if NO_CACHE ever skips).
+#
+# Nixpacks service (scrapegoat worker):
+#   - NIXPACKS_NO_CACHE = "1" in scrapegoat/railway.worker.toml [environments.production].
+#
+# To re-enable caching (faster builds, use only if you are sure deploy picks up new code):
+#   - Remove NO_CACHE from the service’s [environments.production].
+#   - For the worker, remove NIXPACKS_NO_CACHE.

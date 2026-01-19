@@ -18,9 +18,12 @@ restartPolicyMaxRetries = 10
 PYTHONUNBUFFERED = "1"
 RAILWAY_ENVIRONMENT = "production"
 CHIMERA_BRAIN_ADDRESS = "http://chimera-brain.railway.internal:50051"
+# Per-mission timeout; must match Scrapegoat CHIMERA_STATION_TIMEOUT so Core LPUSHes before Scrapegoat BRPOP gives up
+MISSION_TIMEOUT_SEC = "90"
 # Optional: set to BrainScraper HTTP URL (e.g. https://brainscraper.xxx.railway.app or http://brainscraper.railway.internal:3000) to push telemetry to /api/v2-pilot/telemetry for Neural Sight and Stealth panels
 BRAINSCRAPER_URL = ""
 
 [environments]
 [environments.production]
 ENVIRONMENT = "production"
+NO_CACHE = "1"

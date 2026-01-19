@@ -1,6 +1,9 @@
 # BrainScraper – use when brainscraper service Root Directory is EMPTY.
-# Context = repo root. Set NO_CACHE=1 for first deploy, then remove.
+# Context = repo root. NO_CACHE=1 in [environments.production] forces --no-cache. RAILWAY_GIT_COMMIT_SHA busts on new commits.
 FROM node:20-slim
+
+ARG RAILWAY_GIT_COMMIT_SHA=local
+RUN echo "cachebust rev=$RAILWAY_GIT_COMMIT_SHA"
 
 WORKDIR /app
 

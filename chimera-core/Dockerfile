@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+# Instant cache bust: Railway sets RAILWAY_GIT_COMMIT_SHA at build; new commit = full rebuild. Local: "local".
+ARG RAILWAY_GIT_COMMIT_SHA=local
+RUN echo "cachebust rev=$RAILWAY_GIT_COMMIT_SHA"
+
 # Install system dependencies for Playwright
 # Note: Using manual deps list to avoid Debian Trixie package availability issues
 RUN apt-get update && apt-get install -y \

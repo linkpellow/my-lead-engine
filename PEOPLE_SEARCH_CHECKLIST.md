@@ -8,29 +8,28 @@ This doc records what the lead executes and what runs automatically. It is not a
 
 ## Final readiness: one-time setup and test
 
-**You should not need to keep asking.** Variables are set, redeploys were run. The **only** thing left:
+**You should not need to keep asking.** After one-time alignment (§1) and redeploys:
 
 1. **Run the test** (§4 below).
 2. **If it fails** → § Troubleshooting and § Debug with AI (and chimera-core Railway logs for people-search).
 
-Nothing else is required from you for the pipeline to work. If the test passes, you’re done. If it fails, the logs + those sections identify the fix.
+Nothing else is required for the pipeline to work. If the test passes, you’re done. If it fails, the logs + those sections identify the fix.
 
-### 1. Variables (already set via Railway CLI in this project)
+### 1. Variables and one-time alignment
 
-| Service | What | Status |
+| Service | What | Notes |
 |---------|------|--------|
-| **BrainScraper** | `REDIS_URL`, `APP_REDIS_URL`, `SCRAPEGOAT_API_URL`, `DATABASE_URL` | Set |
-| **Scrapegoat** | `REDIS_URL`, `DATABASE_URL`, `SEED_MAGAZINE_ON_STARTUP=1` | Set |
-| **Chimera Core** | `REDIS_URL`, `APP_DATABASE_URL` (or `DATABASE_URL`), `CHIMERA_BRAIN_ADDRESS`, `CAPSOLVER_API_KEY`, `DECODO_API_KEY` | Set |
+| **BrainScraper** | `REDIS_URL`, `APP_REDIS_URL`, `SCRAPEGOAT_API_URL`, `DATABASE_URL` | Set in Dashboard/CLI |
+| **Scrapegoat** | `REDIS_URL`, `DATABASE_URL`, `SEED_MAGAZINE_ON_STARTUP=1`, **`CHIMERA_STATION_TIMEOUT=90`** | Dashboard can override railway.toml (240); must be 90 for Chimera BRPOP. |
+| **Chimera Core** | **`REDIS_URL`** (same Redis as Scrapegoat), `APP_DATABASE_URL` or `DATABASE_URL`, `CHIMERA_BRAIN_ADDRESS`, `CAPSOLVER_API_KEY`, `DECODO_API_KEY` | **REDIS_URL required** for BRPOP `chimera:missions` and LPUSH `chimera:results`. If missing, mission consumer is disabled. |
 
-### 2. One-time redeploys (after variable fixes)
+**One-time alignment (chimera-core Redis + Scrapegoat 90s timeout + redeploys):**
 
 ```bash
-railway redeploy -s chimera-core -y   # Picks up DATABASE_URL / APP_DATABASE_URL
-railway redeploy -s scrapegoat -y     # Runs startup → seeds blueprint:{domain} when SEED_MAGAZINE_ON_STARTUP=1
+./scripts/railway-people-search-align.sh
 ```
 
-*(Redeploys were run via CLI in this session. Re-run only if you change these variables again.)*
+This: sets `REDIS_URL` on chimera-core from Scrapegoat (or use `REDIS_URL='redis://...' ./scripts/railway-people-search-align.sh` if the script can’t read it), sets `CHIMERA_STATION_TIMEOUT=90` on Scrapegoat, then redeploys chimera-core and scrapegoat. Re-run after any change to those variables.
 
 ### 3. Verify (run from repo root, Railway linked)
 
@@ -69,8 +68,8 @@ curl -s https://<CHIMERA_BRAIN_PUBLIC>/health
 
 ## 2. Same Redis (Scrapegoat + Chimera Core)
 
-- **Verified via CLI:** `railway variable list -s scrapegoat` and `-s chimera-core` both show `REDIS_URL` → `redis.railway.internal:6379`.
-- **Code:** Both use `REDIS_URL` or `APP_REDIS_URL`.
+- **Verified via CLI:** `railway variable list -s scrapegoat` and `-s chimera-core` both show `REDIS_URL` → `redis.railway.internal` (or same host). If chimera-core has no `REDIS_URL`, run `./scripts/railway-people-search-align.sh`.
+- **Code:** Both use `REDIS_URL` or `APP_REDIS_URL` (chimera-core also `REDIS_BRIDGE_URL`, `REDIS_CONNECTION_URL`).
 
 ---
 
@@ -115,6 +114,9 @@ Leads in `leads_to_enrich` must include **`name`** (or **`fullName`**) or **`fir
 ## Commands the lead runs (from repo root, Railway linked)
 
 ```bash
+# One-time: Chimera people-search alignment (REDIS on chimera-core, 90s timeout on Scrapegoat, redeploys)
+./scripts/railway-people-search-align.sh
+
 # Variables
 railway variable list -s scrapegoat
 railway variable list -s chimera-core
@@ -166,7 +168,7 @@ Use when a run fails or stalls and you need to correlate logs with code.
   The request from the browser to BrainScraper (or BrainScraper to Scrapegoat) was closed before the pipeline finished. Often a **platform or proxy timeout** (e.g. Vercel 60s, or a proxy &lt; 300s). **Fix:** set `maxDuration` ≥ 300 for the process-one-stream route; ensure no reverse proxy or load balancer times out before 300s. BrainScraper `process-one-stream` and the v2-pilot client use a 330s timeout. BrainScraper and the client use 330s; the limiting factor is usually the host (Vercel/Railway) or a proxy in front.
 
 - **Many `BRPOP timeout 120s` / `240s` across all 6 providers (FastPeopleSearch, TruePeopleSearch, ZabaSearch, SearchPeopleFree, ThatsThem, AnyWho)**  
-  ChimeraStation pushes to `chimera:missions` and BRPOPs `chimera:results:{id}`. No LPUSH from Chimera Core in time. **Causes:** (1) Chimera Core not running or **not on the same Redis**; (2) Chimera Core stuck before LPUSH (pivot, CAPTCHA, or VLM) or crashing. **Fix:** Confirm Chimera Core is up and `REDIS_URL` matches Scrapegoat. Get **chimera-core Railway logs** (last 50–100 lines) and look for `[ChimeraCore]` (e.g. `pivot_fill_fail`, `capsolver_*`, `mission timeout`). Chimera Core now has `MISSION_TIMEOUT_SEC` (default 200): if a mission exceeds 200s it LPUSHes `{status: "failed", error: "mission_timeout_200s"}` so Scrapegoat does not wait the full 240s.
+  ChimeraStation pushes to `chimera:missions` and BRPOPs `chimera:results:{id}`. No LPUSH from Chimera Core in time. **Causes:** (1) Chimera Core not running or **not on the same Redis** (e.g. `REDIS_URL` unset on chimera-core → mission consumer disabled); (2) Chimera Core stuck before LPUSH (pivot, CAPTCHA, or VLM) or crashing. **Fix:** Run `./scripts/railway-people-search-align.sh` to set chimera-core `REDIS_URL` and Scrapegoat `CHIMERA_STATION_TIMEOUT=90`, then redeploy. Confirm Chimera Core is up and `REDIS_URL` matches Scrapegoat. Get **chimera-core Railway logs** (last 50–100 lines) and look for `[ChimeraCore]` (e.g. `pivot_fill_fail`, `capsolver_*`, `mission timeout`). Chimera Core has `MISSION_TIMEOUT_SEC` (default 90): if a mission exceeds that it LPUSHes `{status: "failed", error: "mission_timeout_90s"}` so Scrapegoat does not wait the full 240s.
 
 - **`all_log_lines` empty and `processed: false`**  
   The run never reached pipeline steps (or the stream was cut before the `done` payload). Usually the same as "network error" above—connection closed before Scrapegoat could stream back.

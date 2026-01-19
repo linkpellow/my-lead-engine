@@ -2,15 +2,41 @@
 Pipeline Engine: Orchestrates stations with stop conditions and cost tracking.
 Failures are localized with step, reason, and suggested_fix when stations raise
 ChimeraEnrichmentError. Structured logging: every transition, decision, and halt.
+On any exception, error_file, error_line, and error_traceback are added to the
+step entry for Copy for Cursor / Download logs.
 """
 import datetime
+import os
 import time
+import traceback
 
 from loguru import logger
 
 from typing import Any, Dict, List, Optional
 
 from .exceptions import ChimeraEnrichmentError
+
+
+def _error_location_from_tb(tb) -> tuple[str | None, int | None]:
+    """Extract (file, line) from the last frame of the traceback. Prefer path relative to app/scrapegoat."""
+    if tb is None:
+        return (None, None)
+    try:
+        frames = traceback.extract_tb(tb)
+        if not frames:
+            return (None, None)
+        f = frames[-1]
+        path = f.filename or ""
+        for prefix in ("scrapegoat/", "scrapegoat\\", "app/", "app\\"):
+            i = path.find(prefix)
+            if i != -1:
+                path = path[i:]
+                break
+        else:
+            path = os.path.basename(path) if path else "?"
+        return (path, f.lineno)
+    except Exception:
+        return (None, None)
 from .logging_util import pipeline_log
 from .station import PipelineStation
 from .types import PipelineContext, StopCondition
@@ -104,9 +130,15 @@ class PipelineEngine:
                     err_msg += f" [suggested_fix: {e.suggested_fix}]"
                 pipeline_log(progress_queue, "Pipeline", "station_error", f"{station.name} ChimeraEnrichmentError reason={e.reason} step={e.step} suggested_fix={e.suggested_fix or 'none'}")
                 if steps is not None:
+                    eff, eln = _error_location_from_tb(e.__traceback__)
                     step_entry = {"station": station.name, "started_at": started_at, "duration_ms": duration_ms, "condition": "fail", "status": "fail", "error": err_msg}
                     if e.suggested_fix:
                         step_entry["suggested_fix"] = e.suggested_fix
+                    if eff is not None:
+                        step_entry["error_file"] = eff
+                    if eln is not None:
+                        step_entry["error_line"] = eln
+                    step_entry["error_traceback"] = traceback.format_exc()
                     if recent:
                         step_entry["recent_logs"] = recent
                     steps.append(step_entry)
@@ -125,7 +157,13 @@ class PipelineEngine:
                 recent = (log_buffer[-20:] if log_buffer and len(log_buffer) > 0 else []) if log_buffer else []
                 pipeline_log(progress_queue, "Pipeline", "station_error", f"{station.name} Exception: {str(e)[:300]}")
                 if steps is not None:
+                    eff, eln = _error_location_from_tb(e.__traceback__)
                     step_entry = {"station": station.name, "started_at": started_at, "duration_ms": duration_ms, "condition": "fail", "status": "fail", "error": str(e)}
+                    if eff is not None:
+                        step_entry["error_file"] = eff
+                    if eln is not None:
+                        step_entry["error_line"] = eln
+                    step_entry["error_traceback"] = traceback.format_exc()
                     if recent:
                         step_entry["recent_logs"] = recent
                     steps.append(step_entry)

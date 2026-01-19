@@ -18,3 +18,4 @@ PYTHONUNBUFFERED = "1"
 [environments]
 [environments.production]
 ENVIRONMENT = "production"
+NIXPACKS_NO_CACHE = "1"

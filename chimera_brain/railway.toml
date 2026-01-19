@@ -19,3 +19,4 @@ PYTHONUNBUFFERED = "1"
 [environments]
 [environments.production]
 ENVIRONMENT = "production"
+NO_CACHE = "1"

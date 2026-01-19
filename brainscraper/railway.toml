@@ -2,9 +2,8 @@
 builder = "DOCKERFILE"
 # Dockerfile is in same directory as railway.toml (brainscraper/Dockerfile)
 # Railway will auto-detect it when Root Directory = brainscraper
-# Watch brainscraper directory for changes
 watchPatterns = ["**"]
-# Force rebuild - Quick Search SSL fix + remove name field
+# If new code (e.g. version badge) doesn’t appear: set NO_CACHE=1 in service env and redeploy; see .railway-clear-cache
 
 [deploy]
 # Docker CMD handles startup (npm start)
@@ -18,3 +17,4 @@ restartPolicyMaxRetries = 5
 [environments.production]
 NODE_ENV = "production"
 NEXT_TELEMETRY_DISABLED = "1"
+NO_CACHE = "1"

@@ -141,7 +141,7 @@ Optional (informational in debug-info only): `CHIMERA_BRAIN_HTTP_URL`, `CHIMERA_
 | `DATABASE_URL` or `APP_DATABASE_URL` | Yes | `database.py`, `init_db.py`, `blueprint_commit.py` | ✓ both set |
 | `CHIMERA_BRAIN_HTTP_URL` or `CHIMERA_BRAIN_ADDRESS` | For ChimeraStation | `enrichment._get_chimera_brain_http_url()` → `/api/hive-mind/predict-path`, `store-pattern` | ✓ `CHIMERA_BRAIN_HTTP_URL` added |
 
-Also used (already set): `OPENAI_API_KEY`, `CENSUS_API_KEY`, `RAPIDAPI_KEY`, `TELNYX_API_KEY`, `CAPSOLVER_API_KEY`, `USHA_JWT_TOKEN`, `CHIMERA_STATION_TIMEOUT`, `PORT` (8080), `DECODO_API_KEY`.
+Also used (already set): `OPENAI_API_KEY`, `CENSUS_API_KEY`, `RAPIDAPI_KEY`, `TELNYX_API_KEY`, `CAPSOLVER_API_KEY`, `USHA_JWT_TOKEN`, `CHIMERA_STATION_TIMEOUT` (must be 90 when using Chimera; Dashboard can override railway.toml—run `./scripts/railway-people-search-align.sh` to fix), `PORT` (8080), `DECODO_API_KEY`.
 
 If you run a **separate Scrapegoat Worker** service (`start_redis_worker.py`), give it the same vars as Scrapegoat (REDIS, DATABASE, CHIMERA_BRAIN_HTTP_URL, and the API keys above).
 
@@ -149,7 +149,7 @@ If you run a **separate Scrapegoat Worker** service (`start_redis_worker.py`), g
 
 | Var | Required | Code ref | CLI verified |
 |-----|----------|----------|--------------|
-| `REDIS_URL` or `APP_REDIS_URL` | Yes | `main.py` (REDIS_URL, APP_REDIS_URL, REDIS_BRIDGE_URL, REDIS_CONNECTION_URL), `workers.py`, `capsolver.py`, `visibility_check.py` | ✓ REDIS_URL |
+| `REDIS_URL` or `APP_REDIS_URL` | Yes | `main.py` (REDIS_URL, APP_REDIS_URL, REDIS_BRIDGE_URL, REDIS_CONNECTION_URL), `workers.py`, `capsolver.py`, `visibility_check.py`. If all unset → mission consumer disabled (no BRPOP/LPUSH). | Same Redis as Scrapegoat. Run `./scripts/railway-people-search-align.sh` if unset. |
 | `DATABASE_URL` or `APP_DATABASE_URL` | Yes | `main.py` → `db_bridge.test_db_connection()` on boot; worker **exits with 1** if DB fails | ✓ set |
 | `CHIMERA_BRAIN_ADDRESS` | Yes | `main.py` gRPC (default `http://chimera-brain.railway.internal:50051`) | ✓ set |
 | `BRAINSCRAPER_URL` | For telemetry | `main.py`, `telemetry_client` → `POST /api/v2-pilot/telemetry` | ✓ set |

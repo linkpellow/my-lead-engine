@@ -10,6 +10,7 @@ print("🔧 [STARTUP] Script started", flush=True)
 
 import sys
 import os
+import traceback
 
 # Flush output immediately for Railway logs
 try:
@@ -38,6 +39,7 @@ try:
     import asyncio
     import json
     import queue
+    from contextlib import asynccontextmanager
     from typing import Dict, Any
     from loguru import logger
     logger.info("[STARTUP] Core imports successful")
@@ -46,21 +48,6 @@ except ImportError as e:
     import traceback
     traceback.print_exc()
     sys.exit(1)
-
-app = FastAPI(
-    title="Scrapegoat API",
-    description="AI-powered lead enrichment worker swarm",
-    version="1.0.1"  # Bumped to trigger Railway deployment
-)
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Redis connection - lazy initialization to prevent startup failures
 redis_url = os.getenv("REDIS_URL") or os.getenv("APP_REDIS_URL") or "redis://localhost:6379"
@@ -81,8 +68,8 @@ def get_redis():
             _redis_client = redis.from_url(redis_url)  # Create anyway for later retry
     return _redis_client
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """Ensure leads and site_blueprints exist (idempotent). Seed Magazine blueprints when SEED_MAGAZINE_ON_STARTUP=1."""
     try:
         from init_db import init_db
@@ -112,6 +99,24 @@ async def startup():
                 logger.info("Seed-magazine on startup: done (6 Magazine domains)")
         except Exception as e:
             logger.warning("Seed-magazine on startup (non-fatal): %s", e)
+    yield
+    # shutdown: nothing to do
+
+app = FastAPI(
+    title="Scrapegoat API",
+    description="AI-powered lead enrichment worker swarm",
+    version="1.0.1",  # Bumped to trigger Railway deployment
+    lifespan=lifespan,
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -298,6 +303,7 @@ async def _process_one_stream_gen(lead_data: dict, log_buffer: list):
             "processed": True,
             "success": False,
             "error": str(e),
+            "error_traceback": traceback.format_exc(),
             "steps": [],
             "logs": log_buffer,
         }
@@ -340,6 +346,7 @@ async def process_one_stream():
         return StreamingResponse(
             iter([json.dumps({
                 "done": True, "processed": False, "error": str(e),
+                "error_traceback": traceback.format_exc(),
                 "failure_mode": "STARTUP", "hint": f"Scrapegoat error before pipeline: {str(e)[:150]}",
             }) + "\n"]),
             media_type="application/x-ndjson",
