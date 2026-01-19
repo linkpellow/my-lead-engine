@@ -21,6 +21,8 @@ CHIMERA_STATION_TIMEOUT = "240"
 # Chimera Brain: set in Railway Dashboard. At least one required for Chimera Deep Search.
 CHIMERA_BRAIN_HTTP_URL = ""
 CHIMERA_BRAIN_ADDRESS = ""
+# People-search: seed 6 Magazine blueprints on startup (Redis + file + DB). Idempotent.
+SEED_MAGAZINE_ON_STARTUP = "1"
 
 [environments]
 [environments.production]

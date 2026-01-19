@@ -271,7 +271,7 @@ Variables the code reads that have defaults or are only needed for specific feat
 | Chimera Core SCRAPEGOAT_URL for Dojo | `railway variable list --service chimera-core` \| grep SCRAPEGOAT |
 | Blueprints for Magazine domains | Redis `blueprint:fastpeoplesearch.com` etc. or Dojo; if missing, `_mapping_required` and Dojo alert |
 
-**No remaining gaps for seamless people-search:** CAPSOLVER and DECODO are set on Chimera Core; CHIMERA_BRAIN_HTTP_URL on Scrapegoat; SCRAPEGOAT_URL on Chimera Core; pipeline order and Magazine targets are in code. Blueprints can be absent (Chimera falls back to built-in selectors + VLM); Dojo can add them over time.
+**No remaining gaps for seamless people-search:** CAPSOLVER and DECODO set on Chimera Core; CHIMERA_BRAIN_HTTP_URL on Scrapegoat; SCRAPEGOAT_URL on Chimera Core; pipeline order and Magazine targets in code. **Blueprints:** `SEED_MAGAZINE_ON_STARTUP=1` on Scrapegoat (default in `scrapegoat/railway.toml`) seeds all 6 on deploy. Run-through: `PEOPLE_SEARCH_CHECKLIST.md`.
 
 ---
 
@@ -283,13 +283,16 @@ To remove the remaining “by design” nuances and run people-search with full 
 
 Ensures `blueprint:{domain}` exists for all 6 Magazine domains so BlueprintLoader does not set `_mapping_required` and Dojo/coordinate-drift can override selectors when sites change.
 
-**Option A – HTTP (recommended):**
+**Option A – Auto on Scrapegoat startup (no gap):**  
+Set `SEED_MAGAZINE_ON_STARTUP=1` for Scrapegoat (default in `scrapegoat/railway.toml`). On each deploy, Scrapegoat seeds all 6 before serving. Idempotent.
+
+**Option B – HTTP (manual):**
 ```bash
 curl -X POST "https://<SCRAPEGOAT_URL>/api/blueprints/seed-magazine"
 # e.g. curl -X POST "https://scrapegoat-production-8d0a.up.railway.app/api/blueprints/seed-magazine"
 ```
 
-**Option B – CLI one-off:**
+**Option C – CLI one-off:**
 ```bash
 railway run --service scrapegoat -- python scripts/seed_magazine_blueprints.py
 ```

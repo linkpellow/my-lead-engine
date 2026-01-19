@@ -83,12 +83,35 @@ def get_redis():
 
 @app.on_event("startup")
 async def startup():
-    """Ensure leads and site_blueprints exist (idempotent)."""
+    """Ensure leads and site_blueprints exist (idempotent). Seed Magazine blueprints when SEED_MAGAZINE_ON_STARTUP=1."""
     try:
         from init_db import init_db
         init_db()
     except Exception as e:
         logger.warning("init_db at startup (non-fatal): %s", e)
+
+    if os.getenv("SEED_MAGAZINE_ON_STARTUP") == "1":
+        try:
+            r = get_redis()
+            if r:
+                from app.enrichment.blueprint_commit import commit_blueprint_impl
+                _mag = [
+                    ("fastpeoplesearch.com", {"targetUrl": "https://www.fastpeoplesearch.com/", "name_selector": "input#name-search", "result_selector": "div.search-item", "extraction": {}}),
+                    ("truepeoplesearch.com", {"targetUrl": "https://www.truepeoplesearch.com/", "name_selector": "input#search-name", "result_selector": "div.card-summary", "extraction": {}}),
+                    ("zabasearch.com", {"targetUrl": "https://www.zabasearch.com/", "name_selector": "input[name='q']", "result_selector": None, "extraction": {}}),
+                    ("searchpeoplefree.com", {"targetUrl": "https://www.searchpeoplefree.com/", "name_selector": "input[name='q']", "result_selector": None, "extraction": {}}),
+                    ("thatsthem.com", {"targetUrl": "https://thatsthem.com/", "name_selector": "input[name='q']", "result_selector": None, "extraction": {}}),
+                    ("anywho.com", {"targetUrl": "https://www.anywho.com/", "name_selector": "input[name='q']", "result_selector": None, "extraction": {}}),
+                ]
+                for domain, bp in _mag:
+                    try:
+                        commit_blueprint_impl(domain, bp, r)
+                        logger.info("Seed-magazine on startup: %s", domain)
+                    except Exception as e:
+                        logger.warning("Seed-magazine on startup %s: %s", domain, e)
+                logger.info("Seed-magazine on startup: done (6 Magazine domains)")
+        except Exception as e:
+            logger.warning("Seed-magazine on startup (non-fatal): %s", e)
 
 
 @app.get("/")

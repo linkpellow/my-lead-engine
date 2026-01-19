@@ -12,6 +12,8 @@ healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
+# People-search: set in Railway Dashboard (same as Scrapegoat): REDIS_URL, CAPSOLVER_API_KEY, DECODO_API_KEY (or PROXY_URL). CHIMERA_BRAIN_ADDRESS below.
+
 [env]
 PYTHONUNBUFFERED = "1"
 RAILWAY_ENVIRONMENT = "production"
